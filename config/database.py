@@ -1,10 +1,7 @@
 """数据库 engine + 通用读写函数。
 
-从 data/config/database.py 提升，移除依赖 table_schemas.sql 的 create_tables
-（schema-as-code 后建表由 core/schema.py 自动管理）。
-
-保留兼容：旧代码 `from data.config.database import *` 仍可用（data/config/database.py
-已改为 shim 重导出本模块）。
+schema-as-code 后建表由 core/schema.py 自动管理（ensure_table / evolve_schema）。
+水位表 etl_biz_date + 留痕表 etl_schema_log 由 scripts/00_init_database.py 创建。
 """
 from __future__ import annotations
 
@@ -226,7 +223,5 @@ def optimize_tables() -> None:
             logger.warning(f"优化表失败 {table_name}: {e}")
 
 
-# ==================== 旧函数占位（保持 import 兼容） ====================
-# create_tables / initialize_database / drop_all_tables / clear_all_test_data /
-# test_database_functionality 等旧函数已移除（依赖 table_schemas.sql 或交互式输入）。
-# 如需建表，用 scripts/00_init_database.py（Step 8 提供）+ core/schema.py 自动建表。
+# ==================== 建表入口 ====================
+# 如需建表，用 scripts/00_init_database.py + core/schema.py 自动建表。
