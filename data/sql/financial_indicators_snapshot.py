@@ -1,0 +1,418 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import logging
+from typing import List, Optional
+from sqlalchemy import text
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+
+from data.config.database import save_to_database
+from data.config.database import engine as global_engine
+from data.utils.base_calculator import BaseCalculator
+
+
+class FinancialIndicatorsSnapshotCalculator(BaseCalculator):
+    """财务指标快照计算器"""
+    
+    def __init__(self, engine=None):
+        """初始化财务指标计算器"""
+        if engine is None:
+            engine = global_engine
+            
+        super().__init__("FinancialIndicatorsSnapshotCalculator", engine=engine)
+        
+        self.default_table_name = 'financial_indicators_snapshot'
+        self.default_write_mode = 'overwrite'
+        
+        # 定义列列表
+        self._init_column_lists()
+        
+        self.logger.info("FinancialIndicatorsSnapshotCalculator 初始化完成")
+    
+    def _init_column_lists(self):
+        """初始化各类列列表"""
+
+        # 利润表/现金流量表指标，计算q值和ttm值
+        self.q_cols = [
+            'revenue', 'oper_cost', 'gp', 'oper_exp', 'sell_exp', 'admin_exp', 'rd_exp', 'oper_cost_exp', 'operate_profit', 'total_profit', \
+            'income_tax', 'n_income', 'fin_exp_int_inc', 'ebit', 'n_cashflow_act', 'n_incr_cash_cash_equ', 'fcf', 
+        ]
+        
+        # 资产负债表字段，计算ttm_avg值（算周转率用）
+        self.ttm_avg_cols = [
+            'cash_assets', 'quick_receivables', 'inventories', 'total_cur_assets', 'ppe', 'total_intangible_assets', 'immaterial_assets', 'total_assets', \
+            'quick_payables', 'interest_bearing_liab', 'total_liab', 'total_hldr_eqy_exc_min_int', 'net_operating_assets', 
+        ]
+
+        # 估值
+        self.valuation_cols = [
+            ('bp', 'total_hldr_eqy_exc_min_int', 'total_mv'),
+            ('rep', 'retained_earnings', 'total_mv'),
+            ('sp_q', 'revenue_q', 'total_mv'),
+            ('gpp_q', 'gp_q', 'total_mv'),
+            ('ep_q', 'n_income_q', 'total_mv'),
+            ('sellp_q', 'sell_exp_q', 'total_mv'),   #销售费用可以视为长期经营
+            ('admp_q', 'admin_exp_q', 'total_mv'),   #管理费用可以视为对内投资
+            ('rdp_q', 'rd_exp_q', 'total_mv'),       #研发费用可以视为对内投资
+            ('taxp_q', 'income_tax_q', 'total_mv'),  #税收费用可以视为不宜操纵的收入
+            ('ocfp_q', 'n_cashflow_act_q', 'total_mv'),
+            ('ebitp_q', 'ebit_q', 'total_mv'),
+            ('ebitdap', 'ebitda', 'total_mv'),
+            ('sp_ttm', 'revenue_ttm', 'total_mv'),
+            ('gpp_ttm', 'gp_ttm', 'total_mv'),
+            ('ep_ttm', 'n_income_ttm', 'total_mv'),
+            ('sellp_ttm', 'sell_exp_ttm', 'total_mv'),
+            ('admp_ttm', 'admin_exp_ttm', 'total_mv'),
+            ('rdp_ttm', 'rd_exp_ttm', 'total_mv'),
+            ('taxp_ttm', 'income_tax_ttm', 'total_mv'),
+            ('ocfp_ttm', 'n_cashflow_act_ttm', 'total_mv'),
+            ('ebitp_ttm', 'ebit_ttm', 'total_mv'),
+            ('divp_ttm', 'total_div_ttm', 'total_mv'),
+
+            ('b2ev', 'total_hldr_eqy_exc_min_int', 'ev'),
+            ('re2ev', 'retained_earnings', 'ev'),
+            ('s2ev_q', 'revenue_q', 'ev'),
+            ('gp2ev_q', 'gp_q', 'ev'),
+            ('e2ev_q', 'n_income_q', 'ev'),
+            ('sell2ev_q', 'sell_exp_q', 'ev'),
+            ('adm2ev_q', 'admin_exp_q', 'ev'),
+            ('rd2ev_q', 'rd_exp_q', 'ev'),
+            ('tax2ev_q', 'income_tax_q', 'ev'),
+            ('ocf2ev_q', 'n_cashflow_act_q', 'ev'),
+            ('ebit2ev_q', 'ebit_q', 'ev'),
+            ('ebitda2ev', 'ebitda', 'ev'),
+            ('s2ev_ttm', 'revenue_ttm', 'ev'),
+            ('gp2ev_ttm', 'gp_ttm', 'ev'),
+            ('e2ev_ttm', 'n_income_ttm', 'ev'),
+            ('sell2ev_ttm', 'sell_exp_ttm', 'ev'),
+            ('adm2ev_ttm', 'admin_exp_ttm', 'ev'),
+            ('rd2ev_ttm', 'rd_exp_ttm', 'ev'),
+            ('tax2ev_ttm', 'income_tax_ttm', 'ev'),
+            ('ocf2ev_ttm', 'n_cashflow_act_ttm', 'ev'),
+            ('ebit2ev_ttm', 'ebit_ttm', 'ev'),
+            ('div2ev_ttm', 'total_div_ttm', 'ev'),
+
+            ('noa2evnoa', 'net_operating_assets', 'evnoa'),
+            ('s2evnoa_q', 'revenue_q', 'evnoa'),
+            ('gp2evnoa_q', 'gp_q', 'evnoa'),
+            ('ocf2evnoa_q', 'n_cashflow_act_q', 'evnoa'),
+            ('s2evnoa_ttm', 'revenue_ttm', 'evnoa'),
+            ('gp2evnoa_ttm', 'gp_ttm', 'evnoa'),
+            ('ocf2evnoa_ttm', 'n_cashflow_act_ttm', 'evnoa'),
+        ]
+
+        # 盈利
+        self.profit_cols = [
+            ('roa_q', 'n_income_q', 'total_assets'),
+            ('roe_q', 'n_income_q', 'total_hldr_eqy_exc_min_int'),
+            ('ronoa_q', 'operate_profit_q', 'net_operating_assets'),
+            ('roic_q', 'ebit_q', 'net_operating_assets'),
+            
+            ('gpm_q', 'gp_q', 'revenue_q'),
+            ('npm_q', 'n_income_q', 'revenue_q'),
+            ('opexp2sales_q', 'oper_exp_q', 'revenue_q'),
+            ('sell2sales_q', 'sell_exp_q', 'revenue_q'),
+            ('adm2sales_q', 'admin_exp_q', 'revenue_q'),
+            ('rd2sales_q', 'rd_exp_q', 'revenue_q'),
+            ('tax2sales_q', 'income_tax_q', 'revenue_q'),
+            ('ocf2sales_q', 'n_cashflow_act_q', 'revenue_q'),
+            ('np2costexp_q', 'n_income_q', 'oper_cost_exp_q'),
+
+            ('ocf2sales_ttm', 'n_cashflow_act_ttm', 'revenue_ttm'),
+            ('ocf2opp_ttm', 'n_cashflow_act_ttm', 'operate_profit_ttm'),
+            ('ocf2profit_ttm', 'n_cashflow_act_ttm', 'n_income_ttm'),
+            
+            ('fcf2sales_ttm', 'fcf_ttm', 'revenue_ttm'),
+            ('fcf2opp_ttm', 'fcf_ttm', 'operate_profit_ttm'),
+            ('fcf2profit_ttm', 'fcf_ttm', 'n_income_ttm'),
+            
+            ('ncf2sales_ttm', 'n_incr_cash_cash_equ_ttm', 'revenue_ttm'),
+            ('ncf2opp_ttm', 'n_incr_cash_cash_equ_ttm', 'operate_profit_ttm'),
+            ('ncf2profit_ttm', 'n_incr_cash_cash_equ_ttm', 'n_income_ttm'),
+            
+            ('opincome2ebt_q', 'operate_profit_q', 'total_profit_q'),
+            ('div2profit_ttm', 'total_div_ttm', 'n_income_ttm'),
+            ('div2sales_ttm', 'total_div_ttm', 'revenue_ttm')
+        ]
+
+        # 质量
+        self.quality_cols = [
+            ('cash2a', 'cash_assets', 'total_assets'),
+            ('ar2a', 'quick_receivables', 'total_assets'),
+            ('inv2a', 'inventories', 'total_assets'),
+            ('ca2a', 'total_cur_assets', 'total_assets'),
+            ('ppe2a', 'ppe', 'total_assets'),
+            ('cip2a', 'cip', 'total_assets'), 
+            ('intan2a', 'total_intangible_assets', 'total_assets'),
+            ('ima2a', 'immaterial_assets', 'total_assets'),
+            ('ap2a', 'quick_payables', 'total_assets'),
+            ('ibl2a', 'interest_bearing_liab', 'total_assets'),
+            ('d2a', 'total_liab', 'total_assets'),
+            ('da2a', 'da', 'total_assets'),
+            ('cd2d', 'total_cur_liab', 'total_liab'),
+            ('ca2cd', 'total_cur_assets', 'total_cur_liab'),
+            ('ibl2cash', 'interest_bearing_liab', 'cash_assets'),
+            ('sibl2cash', 'st_interest_bearing_liab', 'cash_assets'),
+            ('int2cash', 'fin_exp_int_inc_ttm', 'cash_assets'), #现金利息匹配
+            ('a2e', 'total_assets', 'total_hldr_eqy_exc_min_int'),
+            
+            ('ar_tvr_ttm', 'revenue_ttm', 'quick_receivables_ttm_avg'),
+            ('inv_tvr_ttm', 'oper_cost_ttm', 'inventories_ttm_avg'),
+            ('inv_tvr_ttm2', 'revenue_ttm', 'inventories_ttm_avg'),
+            ('ca_tvr_ttm', 'revenue_ttm', 'total_cur_assets_ttm_avg'),
+            ('ppe_tvr_ttm', 'revenue_ttm', 'ppe_ttm_avg'),
+            ('assets_tvr_ttm', 'revenue_ttm', 'total_assets_ttm_avg'),
+            ('ap_tvr_ttm', 'oper_cost_ttm', 'quick_payables_ttm_avg'),
+            ('equity_tvr_ttm', 'revenue_ttm', 'total_hldr_eqy_exc_min_int_ttm_avg'),
+        ]
+
+        self.multiples = self.valuation_cols + self.profit_cols + self.quality_cols
+    
+    def get_data(self, snapshot_date: str, entity_list: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+
+        query = """
+        SELECT * FROM financial_statements_snapshot WHERE 1=1
+        """
+        
+        if snapshot_date:
+            query += f" AND snapshot_date = '{snapshot_date}'"
+        
+        if entity_list:
+            codes_str = ",".join([f"'{code}'" for code in entity_list])
+            query += f" AND ts_code IN ({codes_str})"
+            
+        query += " ORDER BY ts_code, end_date"
+        
+        self.logger.info(f"获取财务指标数据: {snapshot_date or '全部'}, "
+                        f"股票数: {len(entity_list) if entity_list else '全部'}")
+        
+        return pd.read_sql(query, self.engine)
+    
+    def process_data(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        """加工财务指标"""
+        if data.empty:
+            return data
+        
+        result = data.sort_values(['ts_code', 'end_date']).reset_index(drop=True)
+
+        # Step 1：数据预处理
+        result = self._preprocessing(result)
+        
+        # Step 2: 计算X/Y型指标
+        result = self._calculate_xy_indicators(result)
+        
+        # Step 3: 计算X/Y的变化率
+        result = self._calculate_yoy_indicators(result)
+        
+        # Step 4: 选择并清理最终列
+        result = self._select_and_clean_columns(result)
+        
+        return result
+
+    def _preprocessing(self, result: pd.DataFrame) -> pd.DataFrame:
+        result['end_date'] = pd.to_datetime(result['end_date'])
+        result['year'] = result['end_date'].dt.year
+        q1_mask = result['report_type'] == 1
+        
+        # 预先分组，避免重复分组计算
+        grouped = result.groupby('ts_code')
+        
+        self.logger.info(f"计算当季值，共{len(self.q_cols)}个")
+        for col in self.q_cols:
+            result[f'{col}_q'] = grouped[col].diff()
+            result.loc[q1_mask, f'{col}_q'] = result.loc[q1_mask, col]
+        
+        self.logger.info(f"计算TTM值，共{len(self.q_cols)}个")
+        for col in self.q_cols:
+            result[f'{col}_ttm'] = grouped[f'{col}_q'].rolling(4, min_periods=4).sum().reset_index(level=0, drop=True)
+        
+        # 分红TTM单独处理
+        if 'total_div' in result.columns:
+            result['total_div_ttm'] = grouped['total_div'].fillna(0).rolling(4, min_periods=1).sum().reset_index(level=0, drop=True)
+        
+        self.logger.info(f"计算年度均值，共{len(self.ttm_avg_cols)}个")
+        # 批量计算年度均值
+        for col in self.ttm_avg_cols:
+            result[f'{col}_ttm_avg'] = grouped[col].rolling(4, min_periods=1).mean().reset_index(level=0, drop=True)
+        
+        return result
+
+    def _calculate_xy_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """计算X/Y型指标"""
+        self.logger.info(f"计算X/Y型指标，共{len(self.multiples)}个")
+        
+        for output, X, Y in self.multiples:
+            df[output] = self.safe_divide(df, X, Y)
+        
+        return df
+        
+    def _calculate_yoy_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """计算YOY增长率指标"""
+        self.logger.info(f"计算YOY指标，共{len(self.q_cols)+len(self.ttm_avg_cols)+len(self.profit_cols)+len(self.quality_cols)}个")
+        
+        for col in self.q_cols:
+            # 计算变化量
+            df[f'{col}_q'] = pd.to_numeric(df[f'{col}_q'], errors='coerce')
+            df[f'{col}_delta4'] = df[f'{col}_q'] - df.groupby('ts_code')[f'{col}_q'].shift(4)
+            df[f'{col}_lag4_abs'] = df.groupby('ts_code')[f'{col}_q'].shift(4).abs()
+            # 计算YOY增长率
+            df[f'{col}_yoy'] = self.safe_divide(df, f'{col}_delta4', f'{col}_lag4_abs', 1e2)
+            
+        for col in self.ttm_avg_cols:
+            # 计算变化量
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[f'{col}_delta4'] = df[col] - df.groupby('ts_code')[col].shift(4)
+            df[f'{col}_lag4_abs'] = df.groupby('ts_code')[col].shift(4).abs()
+            # 计算YOY增长率
+            df[f'{col}_yoy'] = self.safe_divide(df, f'{col}_delta4', f'{col}_lag4_abs', 1e2)
+
+        # 比值也先计算yoy，发现有用的再做复杂扩展，相除时放宽阈值（因为比值的量纲本身不确定多大）
+        for col, X, Y in self.profit_cols+self.quality_cols:
+            # 计算变化量
+            df[f'{col}_delta4'] = df[col] - df.groupby('ts_code')[col].shift(4)
+            df[f'{col}_lag4_abs'] = df.groupby('ts_code')[col].shift(4).abs()
+            # 计算YOY增长率
+            df[f'{col}_yoy'] = self.safe_divide(df, f'{col}_delta4', f'{col}_lag4_abs', 1e-4)
+        
+        return df
+    
+    
+    def _select_and_clean_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """选择并清理最终输出列"""
+        id_cols = [
+            'snapshot_date', 'ts_code', 'ann_date', 'end_date', 
+            'pre_date', 'actual_date', 'modify_date', 'report_type'
+        ]
+        
+        # 收集所有内容列
+        content_cols = []
+        content_cols.extend(['total_mv'])
+        content_cols.extend([f'{col}_q' for col in self.q_cols])
+        content_cols.extend([f'{col}_ttm' for col in self.q_cols])
+        content_cols.extend([col for col in self.ttm_avg_cols])
+        content_cols.extend([output for output, X, Y in self.multiples])
+        content_cols.extend([f'{col}_yoy' for col in self.q_cols+self.ttm_avg_cols])
+        content_cols.extend([f'{output}_yoy' for output, X, Y in self.profit_cols+self.quality_cols])
+        
+        # 只保留存在的列
+        existing_content_cols = [col for col in content_cols if col in df.columns]
+        existing_id_cols = [col for col in id_cols if col in df.columns]
+        
+        result = df[existing_id_cols + existing_content_cols]
+        
+        # 清理无效值
+        result = result.replace([np.nan, np.inf, -np.inf], None)
+        
+        return result
+    
+    def safe_divide(self, df, num_col, den_col, min_threshold=1e2):
+        """安全除法，分母绝对值小于阈值时返回NaN"""
+        if num_col not in df.columns or den_col not in df.columns:
+            return pd.Series(np.nan, index=df.index)
+        return (df[num_col] / df[den_col]).where(df[den_col].abs() > min_threshold, np.nan)
+            
+    def incremental_update(
+        self,
+        snapshot_date: str,
+        auto_save: bool = True,
+        entity_list: Optional[List[str]] = None,
+        **kwargs
+    ) -> pd.DataFrame:
+        """
+        财务指标增量更新，只接受一个snapshot_date参数
+        """
+        self.logger.info(f"财务数据增量更新: {snapshot_date}")
+        
+        # 1. 调用子类自己的get_data方法获取数据
+        # 注意：子类的get_data期望snapshot_date是yyyymmdd格式
+        data = self.get_data(snapshot_date=snapshot_date, entity_list=entity_list, **kwargs)
+        
+        if data.empty:
+            self.logger.error(f"获取{snapshot_date}数据失败")
+            return pd.DataFrame()
+        
+        # 2. 调用子类自己的process_data方法处理数据
+        result = self.process_data(data=data, **kwargs)
+        
+        if result.empty:
+            self.logger.error(f"处理{snapshot_date}数据失败")
+            return pd.DataFrame()
+        
+        # 3. 自动保存到数据库
+        if auto_save and not result.empty:
+            try:
+                # 调用重写的save_to_database方法
+                self.save_to_database(
+                    data=result,
+                    table_name=self.default_table_name,
+                    write_mode=self.default_write_mode,
+                    start_date=snapshot_date,
+                    end_date=snapshot_date
+                )
+                self.logger.info(f"数据已自动保存到 {self.default_table_name}")
+            except Exception as e:
+                self.logger.error(f"保存数据到数据库失败: {e}")
+        
+        return result
+
+    def save_to_database(
+        self, 
+        data: pd.DataFrame, 
+        table_name: str = None, 
+        write_mode: str = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> None:
+        """
+        保存数据到数据库（支持overwrite模式，针对财务数据使用snapshot_date）
+        重写父类方法，将trade_date改为snapshot_date
+        """
+        # 使用默认值
+        table_name = table_name or self.default_table_name
+        write_mode = write_mode or self.default_write_mode
+        
+        # 处理overwrite模式
+        if write_mode == 'overwrite':
+            if start_date is None or end_date is None:
+                raise ValueError("overwrite模式必须提供start_date和end_date参数")
+            
+            start_date = start_date.replace('-','')
+            end_date = end_date.replace('-','')
+            
+            # 检查snapshot_date列是否存在
+            if 'snapshot_date' not in data.columns:
+                self.logger.error("DataFrame中没有snapshot_date列，无法执行overwrite模式")
+                raise ValueError("财务数据必须包含snapshot_date列")
+            
+            # 先删除指定日期范围内的数据
+            try:
+                # 使用text()包装SQL语句
+                delete_sql = text(f"""
+                    DELETE FROM {table_name} 
+                    WHERE snapshot_date BETWEEN :start_date AND :end_date
+                """)
+                
+                with self.engine.begin() as conn:
+                    result = conn.execute(delete_sql, {
+                        'start_date': start_date, 
+                        'end_date': end_date
+                    })
+                    deleted_count = result.rowcount
+                    
+                self.logger.info(f"overwrite模式: 已删除{table_name}中{start_date}到{end_date}的数据，影响行数: {deleted_count}")
+                
+            except Exception as e:
+                self.logger.error(f"删除数据失败: {e}")
+
+            write_mode = 'append'
+        
+        # 使用database.py中的save_to_database函数
+        success = save_to_database(data, table_name, write_mode, engine=self.engine)
+        
+        if success:
+            self.logger.info(f"数据已保存到 {table_name}，共 {len(data)} 条记录，写入模式: {write_mode}")
+        else:
+            self.logger.error(f"数据保存到 {table_name} 失败，写入模式: {write_mode}")
