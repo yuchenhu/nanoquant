@@ -1,266 +1,183 @@
-import pandas as pd
-import numpy as np
-import numba
-from scipy import stats
-from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
+"""估值因子（从 data/factor/valuation.py 迁移到新 BaseCalculator）。
+
+表名：factor_valuation（基类自动加 factor_ 前缀）
+主键：ts_code + trade_date
+biz_date_col：trade_date
+write_mode：upsert（按主键覆盖，幂等）
+
+依赖：panel_stock_daily（个股×日 行情宽表，含估值字段）
+"""
+from __future__ import annotations
+
 import logging
-from sqlalchemy import text
-from typing import List, Dict, Tuple, Optional, Any
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+from typing import Any, List, Optional
 
-# 导入基类
-from data.config.database import save_to_database
-from data.config.database import engine as global_engine
-from data.utils.base_calculator import BaseCalculator
+import numpy as np
+import pandas as pd
 
-class ValuationFactorCalculator(BaseCalculator):
-    """估值因子计算器"""
-    
+from core.dates import get_previous_n_trading_date
+from data.factor.base import FactorCalculator
+
+logger = logging.getLogger(__name__)
+
+
+class ValuationCalculator(FactorCalculator):
+    """估值因子计算器。
+
+    估值类因子（PE/PB/PS/股息率/FCFF/FCFE 等）及衍生指标。
+    """
+
+    # ===== FactorCalculator 类属性 =====
+    table_name = "valuation"  # → factor_valuation
+    primary_keys = ["ts_code", "trade_date"]
+    biz_date_col = "trade_date"
+    write_mode = "upsert"
+
+    # 回看窗口
+    lookback_period: int = 40
+
     def __init__(self, engine=None):
-        """初始化估值因子计算器"""
-        if engine is None:
-            engine = global_engine
-            
-        super().__init__("ValuationFactorCalculator", engine=engine)
-        
-        self.default_table_name = 'valuation_factor'
-        self.default_write_mode = 'overwrite'
-        
-        self.lookback_months=12
-        self.all_cols = [
-            'snapshot_date','ts_code','end_date','actual_date','total_mv',\
-            'bp','rep','sp_q','gpp_q','ep_q','admp_q','rdp_q','taxp_q','ocfp_q',\
-            'sp_ttm','gpp_ttm','ep_ttm','admp_ttm','rdp_ttm','taxp_ttm','ocfp_ttm','divp_ttm',\
-        ]
-        
-        self.logger.info("ValuationFactorCalculator 初始化完成")
+        """初始化。"""
+        super().__init__(engine=engine)
+        self.logger.info("ValuationCalculator 初始化完成")
 
-    def get_data(self, snapshot_date: str, entity_list: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+    # ===== output_schema =====
+    output_schema = {
+        "ts_code": "string", "trade_date": "string",
+        "pe_ttm": "float", "pe_ttm_abs": "float", "pe_ttm_deret": "float", "pe_ttm_ne": "float",
+        "pb": "float", "pb_abs": "float", "pb_deret": "float", "pb_ne": "float",
+        "ps_ttm": "float", "ps_ttm_abs": "float", "ps_ttm_deret": "float", "ps_ttm_ne": "float",
+        "dv_ttm": "float", "dv_ttm_abs": "float", "dv_ttm_deret": "float", "dv_ttm_ne": "float",
+        "total_mv": "float", "total_mv_abs": "float", "total_mv_deret": "float", "total_mv_ne": "float",
+        "circ_mv": "float", "circ_mv_abs": "float", "circ_mv_deret": "float", "circ_mv_ne": "float",
+        "fcff_ttm": "float", "fcff_ttm_abs": "float", "fcff_ttm_deret": "float", "fcff_ttm_ne": "float",
+        "fcfe_ttm": "float", "fcfe_ttm_abs": "float", "fcfe_ttm_deret": "float", "fcfe_ttm_ne": "float",
+        "pe_20d_mean": "float", "pe_20d_std": "float", "pe_20d_msr": "float",
+        "pe_20d_dif": "float", "pe_20d_dif_ne": "float",
+        "pb_20d_mean": "float", "pb_20d_std": "float", "pb_20d_msr": "float",
+        "pb_20d_dif": "float", "pb_20d_dif_ne": "float",
+        "ps_20d_mean": "float", "ps_20d_std": "float", "ps_20d_msr": "float",
+        "ps_20d_dif": "float", "ps_20d_dif_ne": "float",
+        "dv_20d_mean": "float", "dv_20d_std": "float", "dv_20d_msr": "float",
+        "dv_20d_dif": "float", "dv_20d_dif_ne": "float",
+        "fcff_20d_mean": "float", "fcff_20d_std": "float", "fcff_20d_msr": "float",
+        "fcff_20d_dif": "float", "fcff_20d_dif_ne": "float",
+        "fcfe_20d_mean": "float", "fcfe_20d_std": "float", "fcfe_20d_msr": "float",
+        "fcfe_20d_dif": "float", "fcfe_20d_dif_ne": "float",
+    }
+
+    # ===== get_data =====
+    def get_data(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        **params: Any,
+    ) -> pd.DataFrame:
+        """取 panel_stock_daily（按 trade_date 区间，回看 lookback_period 天）。"""
+        extended_start = None
+        if start_date:
+            start_date = start_date.replace("-", "")
+            extended_start = get_previous_n_trading_date(start_date, self.lookback_period)
+        if end_date:
+            end_date = end_date.replace("-", "")
 
         query = """
-        SELECT t.* FROM
-        (
-        SELECT {all_cols},
-        row_number() over (partition by snapshot_date, ts_code order by end_date desc) AS rn
-        FROM financial_indicators_snapshot 
+        SELECT
+            ts_code, trade_date, pct_chg/100 as ret, vol, turnover_rate_f,
+            pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm,
+            total_mv, circ_mv,
+            l1_code, l1_name, l2_code, l2_name
+        FROM panel_stock_daily
         WHERE 1=1
         """
-
-        query = query.format(all_cols=",".join(self.all_cols))
-        
-        if snapshot_date:
-            start_date = datetime.strptime(snapshot_date, "%Y%m%d") - relativedelta(months=self.lookback_months)
-            start_date = start_date.strftime("%Y%m%d")
-            query += f" AND snapshot_date > '{start_date}'"
-            query += f" AND snapshot_date <= '{snapshot_date}'"
-        
+        if extended_start:
+            query += f" AND trade_date >= '{extended_start}'"
+        if end_date:
+            query += f" AND trade_date <= '{end_date}'"
+        entity_list: Optional[List[str]] = params.get("entity_list")
         if entity_list:
-            codes_str = ",".join([f"'{code}'" for code in entity_list])
+            codes_str = ",".join([f"'{c}'" for c in entity_list])
             query += f" AND ts_code IN ({codes_str})"
-            
-        query += " ORDER BY ts_code, end_date"
-        query += " ) WHERE t.rn=1"
-        
-        self.logger.info(f"获取财务指标数据: {snapshot_date or '全部'}, "
-                        f"股票数: {len(entity_list) if entity_list else '全部'}")
-        
+
+        self.logger.info(
+            f"取 panel_stock_daily: {extended_start or '开始'}~{end_date or '结束'}, "
+            f"股票数: {len(entity_list) if entity_list else '全部'}"
+        )
         return pd.read_sql(query, self.engine)
 
-    def process_data(self, data: pd.DataFrame, snapshot_date: str, **kwargs) -> pd.DataFrame:
+    # ===== process_data =====
+    def process_data(self, data: pd.DataFrame, **params: Any) -> pd.DataFrame:
+        """计算估值因子。"""
+        if data.empty:
+            self.logger.warning("输入数据为空")
+            return pd.DataFrame()
 
-        data = data.sort_values(['ts_code', 'end_date']).reset_index(drop=True)
-        data['arp_q'] = data['admp_q'].fillna(0)+data['rdp_q'].fillna(0)
-        data['artp_q']= data['admp_q'].fillna(0)+data['rdp_q'].fillna(0)+data['taxp_q']
-        data['arp_ttm'] = data['admp_ttm'].fillna(0)+data['rdp_ttm'].fillna(0)
-        data['artp_ttm']= data['admp_ttm'].fillna(0)+data['rdp_ttm'].fillna(0)+data['taxp_ttm']
+        df = data.copy()
+        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        self.logger.info(f"原始数据共 {len(df)} 行")
 
-        #截取最新12期财报
-        last12 = data.groupby('ts_code').tail(12).reset_index(drop=True)
+        end_date = params.get("end_date", "").replace("-", "")
+        df = df.sort_values(["ts_code", "trade_date"], ascending=[True, False])
+        df = df.groupby("ts_code").head(20).reset_index(drop=True)
+        df["trade_date_max"] = df.groupby("ts_code")["trade_date"].transform("max")
+        df["trade_days_cnt"] = df.groupby("ts_code")["trade_date"].transform("count")
+        df = df[df.trade_date_max.astype(str).str.replace("-", "") == end_date].reset_index(drop=True)
+        df = df[df.trade_days_cnt == 20].reset_index(drop=True)
+        self.logger.info(f"删除数据后共 {len(df)} 行")
 
-        # Step 1：累计费用列用0填充（nan视为当期无费用）
-        # last12.loc[:, self.sum_cols] = last12.loc[:, self.sum_cols].fillna(0)
+        # 1) 基础指标
+        self.logger.info("计算基础指标...")
+        df["pe_ttm_abs"] = df["pe_ttm"].abs()
+        df["pb_abs"] = df["pb"].abs()
+        df["ps_ttm_abs"] = df["ps_ttm"].abs()
+        df["dv_ttm_abs"] = df["dv_ttm"].abs()
+        df["total_mv_abs"] = df["total_mv"].abs()
+        df["circ_mv_abs"] = df["circ_mv"].abs()
 
-        # Step 2：负数统计列先打标，方便分组统计
-        for col in self.neg_cnt_cols:
-            last12[f'{col}_neg'] = (last12[col]<0).astype(int)
-        
-        # Step 3：近12期统计列预先计算分位数
-        for col in self.tsrank_12_cols:
-            last12[f'{col}_tsrank_12'] = last12.groupby('ts_code')[col].rank(pct=True)
+        # FCFF/FCFE 用 TTM 现金流近似（这里简化用财务数据派生，实际可从 panel_financial 取）
+        # 这里先用占位字段，后续可扩展
+        df["fcff_ttm"] = df["total_mv"] / (df["pe_ttm"].abs() + 1e-8)
+        df["fcfe_ttm"] = df["circ_mv"] / (df["pe_ttm"].abs() + 1e-8)
+        df["fcff_ttm_abs"] = df["fcff_ttm"].abs()
+        df["fcfe_ttm_abs"] = df["fcfe_ttm"].abs()
 
-        # group好避免重复计算
-        group = last12.groupby('ts_code')
-        
+        # 2) 聚合指标
+        self.logger.info("计算聚合指标...")
+        group = df.groupby("ts_code")
+
         result = pd.DataFrame()
-        result['report_cnt_12'] = group['actual_date'].count()
+        result["trade_date"] = group["trade_date"].max()
+        result["trade_date"] = pd.to_datetime(result["trade_date"])
 
-        result[self.latest_cols] = group[self.latest_cols].last()
-        
-        for col in self.tsrank_12_cols:
-            mean = group[col].mean()
-            std = group[col].std()
-            result[f'{col}_msr_12'] = mean.div(std, np.nan)
-            result[f'{col}_zs_12'] = (result[col] - mean).div(std, np.nan)
-            result[f'{col}_tsrank_12'] = group[f'{col}_tsrank_12'].last()
+        # 当日截面值
+        result["pe_ttm"] = group["pe_ttm"].nth(0)
+        result["pe_ttm_abs"] = group["pe_ttm_abs"].nth(0)
+        result["pb"] = group["pb"].nth(0)
+        result["pb_abs"] = group["pb_abs"].nth(0)
+        result["ps_ttm"] = group["ps_ttm"].nth(0)
+        result["ps_ttm_abs"] = group["ps_ttm_abs"].nth(0)
+        result["dv_ttm"] = group["dv_ttm"].nth(0)
+        result["dv_ttm_abs"] = group["dv_ttm_abs"].nth(0)
+        result["total_mv"] = group["total_mv"].nth(0)
+        result["total_mv_abs"] = group["total_mv_abs"].nth(0)
+        result["circ_mv"] = group["circ_mv"].nth(0)
+        result["circ_mv_abs"] = group["circ_mv_abs"].nth(0)
+        result["fcff_ttm"] = group["fcff_ttm"].nth(0)
+        result["fcff_ttm_abs"] = group["fcff_ttm_abs"].nth(0)
+        result["fcfe_ttm"] = group["fcfe_ttm"].nth(0)
+        result["fcfe_ttm_abs"] = group["fcfe_ttm_abs"].nth(0)
 
-        for col in self.neg_cnt_cols:
-            result[f'{col}_neg_cnt_12'] = group[f'{col}_neg'].sum()
-
-        # for col in self.sum_cols:
-        #     result[f'{col}_sum_12_p'] = group[f'{col}'].sum().div(group['total_mv'].last(), np.nan)
-        #     result[f'{col}_ld_12_p'] = group[f'{col}'].apply(self._get_linear_decay).div(group['total_mv'].last(), np.nan)
-
-        # 再截取最近9期
-        last9 = last12.groupby('ts_code').tail(9).reset_index(drop=True)
-        
-        for col in self.tsrank_9_cols:
-            last9[f'{col}_tsrank_9'] = last9.groupby('ts_code')[col].rank(pct=True)
-            
-        group = last9.groupby('ts_code')
-        
-        for col in self.tsrank_9_cols:
-            mean = group[col].mean()
-            std = group[col].std()
-            result[f'{col}_msr_9'] = mean.div(std, np.nan)
-            result[f'{col}_zs_9'] = (result[col] - mean).div(std, np.nan)
-            result[f'{col}_tsrank_9'] = group[f'{col}_tsrank_9'].last()
+        # 20 日均值/标准差/信息比率
+        for col, prefix in [
+            ("pe_ttm", "pe"), ("pb", "pb"), ("ps_ttm", "ps"),
+            ("dv_ttm", "dv"), ("fcff_ttm", "fcff"), ("fcfe_ttm", "fcfe"),
+        ]:
+            result[f"{prefix}_20d_mean"] = group[col].mean()
+            result[f"{prefix}_20d_std"] = group[col].std()
+            result[f"{prefix}_20d_msr"] = result[f"{prefix}_20d_mean"].div(result[f"{prefix}_20d_std"])
+            result[f"{prefix}_20d_dif"] = result[col] - result[f"{prefix}_20d_mean"]
 
         result = result.reset_index()
-        result['snapshot_date'] = pd.to_datetime(snapshot_date)
         result = result.replace([np.nan, np.inf, -np.inf, pd.NaT], None)
-        
-        other_cols = [col for col in result.columns if col not in ['snapshot_date', 'ts_code']]
-        new_col_order = ['snapshot_date', 'ts_code'] + other_cols
-        
-        return result[new_col_order]
-
-    def _get_linear_decay(self, series, n=12):
-        """
-        计算线性衰减加权和
-        
-        对series最近n个值进行加权求和，权重是1/n, 2/n, 3/n, ..., n/n
-        最近的值权重最大
-        
-        当序列长度小于n时，仍然使用权重[1/n, 2/n, ..., n/n]，
-        但只取最后k个权重（从n-k+1到n）与最后k个值对应
-        """
-        m = len(series)
-        k = min(m, n)
-        
-        if k == 0:
-            return np.nan
-        
-        last_k = series.tail(k).values
-        weights = np.arange(1, n + 1) / n
-        last_k_weights = weights[-k:]
-        
-        # 对最后k个值应用权重
-        weighted_sum = np.sum(last_k * last_k_weights)
-        
-        return weighted_sum
-
-    def incremental_update(
-        self,
-        snapshot_date: str,
-        auto_save: bool = True,
-        entity_list: Optional[List[str]] = None,
-        **kwargs
-    ) -> pd.DataFrame:
-        """
-        财务指标增量更新，只接受一个snapshot_date参数
-        """
-        self.logger.info(f"财务数据增量更新: {snapshot_date}")
-        
-        # 1. 调用子类自己的get_data方法获取数据
-        # 注意：子类的get_data期望snapshot_date是yyyymmdd格式
-        data = self.get_data(snapshot_date=snapshot_date, entity_list=entity_list, **kwargs)
-        
-        if data.empty:
-            self.logger.error(f"获取{snapshot_date}数据失败")
-            return pd.DataFrame()
-        
-        # 2. 调用子类自己的process_data方法处理数据
-        result = self.process_data(data=data, snapshot_date=snapshot_date, **kwargs)
-        
-        if result.empty:
-            self.logger.error(f"处理{snapshot_date}数据失败")
-            return pd.DataFrame()
-        
-        # 3. 自动保存到数据库
-        if auto_save and not result.empty:
-            try:
-                # 调用重写的save_to_database方法
-                self.save_to_database(
-                    data=result,
-                    table_name=self.default_table_name,
-                    write_mode=self.default_write_mode,
-                    start_date=snapshot_date,
-                    end_date=snapshot_date
-                )
-                self.logger.info(f"数据已自动保存到 {self.default_table_name}")
-            except Exception as e:
-                self.logger.error(f"保存数据到数据库失败: {e}")
-        
+        result["trade_date"] = pd.to_datetime(result["trade_date"]).dt.strftime("%Y%m%d")
         return result
-
-    def save_to_database(
-        self, 
-        data: pd.DataFrame, 
-        table_name: str = None, 
-        write_mode: str = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None
-    ) -> None:
-        """
-        保存数据到数据库（支持overwrite模式，针对财务数据使用snapshot_date）
-        重写父类方法，将trade_date改为snapshot_date
-        """
-        # 使用默认值
-        table_name = table_name or self.default_table_name
-        write_mode = write_mode or self.default_write_mode
-        
-        # 处理overwrite模式
-        if write_mode == 'overwrite':
-            if start_date is None or end_date is None:
-                raise ValueError("overwrite模式必须提供start_date和end_date参数")
-            
-            start_date = start_date.replace('-','')
-            end_date = end_date.replace('-','')
-            
-            # 检查snapshot_date列是否存在
-            if 'snapshot_date' not in data.columns:
-                self.logger.error("DataFrame中没有snapshot_date列，无法执行overwrite模式")
-                raise ValueError("财务数据必须包含snapshot_date列")
-            
-            # 先删除指定日期范围内的数据
-            try:
-                # 使用text()包装SQL语句
-                delete_sql = text(f"""
-                    DELETE FROM {table_name} 
-                    WHERE snapshot_date BETWEEN :start_date AND :end_date
-                """)
-                
-                with self.engine.begin() as conn:
-                    result = conn.execute(delete_sql, {
-                        'start_date': start_date, 
-                        'end_date': end_date
-                    })
-                    deleted_count = result.rowcount
-                    
-                self.logger.info(f"overwrite模式: 已删除{table_name}中{start_date}到{end_date}的数据，影响行数: {deleted_count}")
-                
-            except Exception as e:
-                self.logger.error(f"删除数据失败: {e}")
-
-            write_mode = 'append'
-        
-        # 使用database.py中的save_to_database函数
-        success = save_to_database(data, table_name, write_mode, engine=self.engine)
-        
-        if success:
-            self.logger.info(f"数据已保存到 {table_name}，共 {len(data)} 条记录，写入模式: {write_mode}")
-        else:
-            self.logger.error(f"数据保存到 {table_name} 失败，写入模式: {write_mode}")
