@@ -11,11 +11,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 # A股数据库配置
+# 密码从环境变量读取，默认留空；本地用 .env + python-dotenv 加载
+# 注意：旧版本曾在此硬编码密码，已移除，请尽快轮换该 MySQL 密码
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 3306)),
     'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', 'Wmt9dbsj!'),
+    'password': os.getenv('DB_PASSWORD', ''),
     'database': os.getenv('DB_DATABASE', 'stock'),
     'charset': 'utf8mb4'
 }

@@ -1,39 +1,22 @@
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy import Table, MetaData
-from sqlalchemy.dialects.mysql import insert
 import os
+import logging
 
-DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'port': int(os.getenv('DB_PORT', 3306)),
-    'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', 'Wmt9dbsj!'),
-    'database': os.getenv('DB_DATABASE', 'stock'),
-    'charset': 'utf8mb4'
-}
+logger = logging.getLogger(__name__)
 
-# 创建数据库引擎
-def get_engine():
-    """获取数据库引擎"""
-    database_url = (
-        f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
-        f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
-        f"?charset={DB_CONFIG['charset']}"
-    )
-    return create_engine(database_url, pool_pre_ping=True, echo=False)
+# 复用 data.config.database 的 engine，避免重复建连 + 重复硬编码配置
+# 注意：旧版本曾在此硬编码 DB 密码 + 自建 engine，已改为复用全局 engine
+from data.config.database import engine, execute_sql  # noqa: E402
 
-engine = get_engine()
-
-##缓存交易日历用于其他函数
+# 缓存交易日历用于其他函数
 global _TRADE_CAL_DF
 
 _TRADE_CAL_DF = pd.read_sql("SELECT cal_date, is_open FROM trade_cal ORDER BY cal_date", engine)
-_TRADE_CAL_DF['cal_date'] = _TRADE_CAL_DF['cal_date'].astype(str).apply(lambda x: x.replace('-',''))
+_TRADE_CAL_DF['cal_date'] = _TRADE_CAL_DF['cal_date'].astype(str).apply(lambda x: x.replace('-', ''))
 
-print(f"交易日历缓存已加载，共 {len(_TRADE_CAL_DF)} 条记录")
+logger.info(f"交易日历缓存已加载，共 {len(_TRADE_CAL_DF)} 条记录")
 
 def get_today_str(format_str: str = '%Y%m%d') -> str:
     """获取今天日期字符串"""
@@ -269,6 +252,7 @@ def is_trading_day(date_str: Optional[str] = None) -> bool:
         return date_row['is_open'].iloc[0] == 1
     else:
         # 如果没有找到该日期，简单判断周末
+        date_obj = datetime.strptime(date_str, '%Y%m%d')
         if date_obj.weekday() in [5, 6]:  # 5=周六, 6=周日
             return False
         else:

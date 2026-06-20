@@ -24,7 +24,9 @@ PLATFORM_CONFIG = {
 }
 
 # ==================== Tushare配置 ====================
-TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', '06755e162d716f705e7bc8608803392020f4be245a6d5f815bde470e')
+# token 从环境变量读取，默认留空；本地用 .env + python-dotenv 加载
+# 注意：旧版本曾在此硬编码 token，已移除，请尽快在 tushare.pro 轮换该 token
+TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', '')
 TUSHARE_BASE_URL = 'http://api.tushare.pro'
 
 # 配置目录和文件路径
