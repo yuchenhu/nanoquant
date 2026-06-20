@@ -1,0 +1,143 @@
+{
+  "_comment": "接入层调度配置（data/etl/ 的 Calculator）。frequency=调度频率（多久触发一次 update），不是数据频率。class 路径在 Step 5 创建 data/etl/loader.py 后生效。",
+  "irregular": [
+    {
+      "task_id": "trade_cal",
+      "class": "data.etl.loader.TradeCalCalculator",
+      "description": "交易日历（手动触发，其他任务依赖）",
+      "depends_on": []
+    }
+  ],
+  "daily": [
+    {
+      "task_id": "stock_basic",
+      "class": "data.etl.loader.StockBasicCalculator",
+      "description": "股票基本信息（全量刷新）",
+      "depends_on": ["trade_cal"]
+    },
+    {
+      "task_id": "stock_st",
+      "class": "data.etl.loader.StockStCalculator",
+      "description": "ST 股票信息",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "suspend_d",
+      "class": "data.etl.loader.SuspendDCalculator",
+      "description": "每日停复牌信息",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "daily",
+      "class": "data.etl.loader.StockDailyCalculator",
+      "description": "日线行情",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "adj_factor",
+      "class": "data.etl.loader.AdjFactorCalculator",
+      "description": "复权因子",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "daily_basic",
+      "class": "data.etl.loader.DailyBasicCalculator",
+      "description": "每日指标（PE/PB/市值等）",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "moneyflow",
+      "class": "data.etl.loader.MoneyflowCalculator",
+      "description": "资金流向",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "index_basic",
+      "class": "data.etl.loader.IndexBasicCalculator",
+      "description": "指数基本信息（全量刷新）",
+      "depends_on": ["trade_cal"]
+    },
+    {
+      "task_id": "index_daily",
+      "class": "data.etl.loader.IndexDailyCalculator",
+      "description": "指数日线行情",
+      "depends_on": ["index_basic"]
+    },
+    {
+      "task_id": "index_dailybasic",
+      "class": "data.etl.loader.IndexDailyBasicCalculator",
+      "description": "指数每日指标",
+      "depends_on": ["index_basic"]
+    },
+    {
+      "task_id": "index_classify",
+      "class": "data.etl.loader.IndexClassifyCalculator",
+      "description": "申万行业分类（全量刷新）",
+      "depends_on": ["trade_cal"]
+    },
+    {
+      "task_id": "index_member_all",
+      "class": "data.etl.loader.IndexMemberAllCalculator",
+      "description": "指数成分股全量（全量刷新）",
+      "depends_on": ["index_classify"]
+    },
+    {
+      "task_id": "sw_daily",
+      "class": "data.etl.loader.SwDailyCalculator",
+      "description": "申万行业日线行情",
+      "depends_on": ["index_classify"]
+    },
+    {
+      "task_id": "income",
+      "class": "data.etl.loader.IncomeCalculator",
+      "description": "利润表（按 ann_date 增量）",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "balancesheet",
+      "class": "data.etl.loader.BalancesheetCalculator",
+      "description": "资产负债表（按 ann_date 增量）",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "cashflow",
+      "class": "data.etl.loader.CashflowCalculator",
+      "description": "现金流量表（按 ann_date 增量）",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "dividend",
+      "class": "data.etl.loader.DividendCalculator",
+      "description": "分红送股（按 ann_date 增量）",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "disclosure_date",
+      "class": "data.etl.loader.DisclosureDateCalculator",
+      "description": "财报披露日期（按 ann_date 增量）",
+      "depends_on": ["stock_basic"]
+    }
+  ],
+  "weekly": [
+    {
+      "task_id": "weekly",
+      "class": "data.etl.loader.StockWeeklyCalculator",
+      "description": "周线行情",
+      "depends_on": ["stock_basic"]
+    }
+  ],
+  "monthly": [
+    {
+      "task_id": "monthly",
+      "class": "data.etl.loader.StockMonthlyCalculator",
+      "description": "月线行情",
+      "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "index_weight",
+      "class": "data.etl.loader.IndexWeightCalculator",
+      "description": "指数成分股权重",
+      "depends_on": ["index_basic"]
+    }
+  ]
+}

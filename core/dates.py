@@ -125,6 +125,21 @@ def is_trading_day(date_str: Optional[str] = None) -> bool:
     return date_obj.weekday() not in [5, 6]
 
 
+def get_trade_dates_between(start_date: str, end_date: str) -> List[str]:
+    """获取 [start_date, end_date] 闭区间内所有交易日（YYYYMMDD 字符串，升序）。
+
+    依赖 trade_cal 表。若区间内无交易日返回空列表。
+    """
+    if not start_date or not end_date:
+        return []
+    if start_date > end_date:
+        return []
+
+    cal = _get_trade_cal()
+    mask = (cal["cal_date"] >= start_date) & (cal["cal_date"] <= end_date) & (cal["is_open"] == 1)
+    return cal.loc[mask, "cal_date"].tolist()
+
+
 def find_nearest_trading_day(
     date_str: Optional[str] = None, backward: bool = True
 ) -> Optional[str]:

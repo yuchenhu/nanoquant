@@ -1,0 +1,91 @@
+{
+  "_comment": "加工层调度配置（data/panel+factor+label/ 的 Calculator）。frequency=调度频率。class 路径在 Step 6/7 迁移后生效（data/sql → data/panel，data/factor+label 迁到新 BaseCalculator）。",
+  "daily": [
+    {
+      "task_id": "stock_daily_panel",
+      "class": "data.panel.stock_daily_panel.StockDailyPanelCalculator",
+      "description": "个股×日 行情宽表（行情+复权+市值+ST+行业+指数成分）",
+      "depends_on": ["daily", "adj_factor", "daily_basic", "stock_st", "index_member_all"]
+    },
+    {
+      "task_id": "market_sentiment_daily",
+      "class": "data.panel.market_sentiment_daily.MarketSentimentDailyCalculator",
+      "description": "市场×日 情绪",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "stock_percentiles",
+      "class": "data.panel.stock_percentiles.StockPercentilesCalculator",
+      "description": "个股×日 历史百分位（窗口统计量）",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "fin_statement_panel",
+      "class": "data.panel.fin_statement_panel.FinancialStatementsSnapshotCalculator",
+      "description": "个股×报告期 财务三表合并",
+      "depends_on": ["income", "balancesheet", "cashflow"]
+    },
+    {
+      "task_id": "fin_indicator_snapshot",
+      "class": "data.panel.fin_indicator_snapshot.FinancialIndicatorsSnapshotCalculator",
+      "description": "个股×快照日 财务指标",
+      "depends_on": ["fin_statement_panel"]
+    },
+    {
+      "task_id": "factor_price_volume_20d",
+      "class": "data.factor.price_volume_20d.PriceVolume20DCalculator",
+      "description": "价量动量因子（20日）",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "factor_high_low_spread",
+      "class": "data.factor.high_low_spread.HighLowSpreadCalculator",
+      "description": "高低价差因子",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "factor_industry_resonance",
+      "class": "data.factor.industry_resonance.IndustryResonanceCalculator",
+      "description": "行业共振因子",
+      "depends_on": ["stock_daily_panel", "sw_daily"]
+    },
+    {
+      "task_id": "factor_moneyflow_imbalance",
+      "class": "data.factor.moneyflow_imbalance.MoneyFlowImbalanceCalculator",
+      "description": "资金流不平衡因子",
+      "depends_on": ["stock_daily_panel", "moneyflow"]
+    },
+    {
+      "task_id": "factor_trader_structure",
+      "class": "data.factor.trader_structure.TraderStructureCalculator",
+      "description": "交易者结构因子",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "factor_valuation",
+      "class": "data.factor.valuation.ValuationFactorCalculator",
+      "description": "估值因子",
+      "depends_on": ["stock_daily_panel", "fin_indicator_snapshot"]
+    },
+    {
+      "task_id": "label_forward_returns",
+      "class": "data.label.forward_returns.ForwardReturnsCalculator",
+      "description": "未来 N 日收益率标签",
+      "depends_on": ["stock_daily_panel"]
+    }
+  ],
+  "monthly": [
+    {
+      "task_id": "market_sentiment_monthly",
+      "class": "data.panel.market_sentiment_monthly.MarketSentimentMonthlyCalculator",
+      "description": "市场×月 情绪",
+      "depends_on": ["market_sentiment_daily"]
+    },
+    {
+      "task_id": "stock_mv_monthly",
+      "class": "data.panel.stock_mv_monthly.MvMonthlyCalculator",
+      "description": "个股×月 市值",
+      "depends_on": ["stock_daily_panel"]
+    }
+  ]
+}
