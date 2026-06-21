@@ -116,6 +116,30 @@
       "class": "data.etl.loader.DisclosureDateCalculator",
       "description": "财报披露日期（按 ann_date 增量）",
       "depends_on": ["stock_basic"]
+    },
+    {
+      "task_id": "fund_basic",
+      "class": "data.etl.loader.FundBasicCalculator",
+      "description": "基金基本信息（场内 ETF/LOF，全量刷新）",
+      "depends_on": ["trade_cal"]
+    },
+    {
+      "task_id": "fund_daily",
+      "class": "data.etl.loader.FundDailyCalculator",
+      "description": "场内基金日线行情",
+      "depends_on": ["fund_basic"]
+    },
+    {
+      "task_id": "fund_adj",
+      "class": "data.etl.loader.FundAdjCalculator",
+      "description": "基金复权因子",
+      "depends_on": ["fund_basic"]
+    },
+    {
+      "task_id": "fund_share",
+      "class": "data.etl.loader.FundShareCalculator",
+      "description": "基金规模（每日份额）",
+      "depends_on": ["fund_basic"]
     }
   ],
   "weekly": [

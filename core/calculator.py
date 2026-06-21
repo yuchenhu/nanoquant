@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from sqlalchemy import inspect, text
 
-from config.database import engine, save_to_database
+from config.database import engine, overwrite_by_partition, save_to_database
 from core.dates import get_today_str
 from core.schema import (
     convert_date_columns,
@@ -56,6 +56,7 @@ class BaseCalculator:
     biz_date_col: str = "trade_date"
     primary_keys: List[str] = []
     write_mode: str = "upsert"
+    partition_col: Optional[str] = None  # write_mode=overwrite 时的分区键（删除粒度）
     output_schema: Optional[Dict[str, str]] = None
     type_overrides: Optional[Dict[str, str]] = None
 
@@ -134,7 +135,27 @@ class BaseCalculator:
         schema = self._resolve_schema(data)
         ensure_table(self.table_name, schema, self.primary_keys)
         data = convert_date_columns(data, schema)
-        save_to_database(data, self.table_name, self.write_mode, engine=self.engine)
+        if self.write_mode == "overwrite":
+            if not self.partition_col:
+                raise ValueError(
+                    f"{self.table_name} write_mode=overwrite 必须声明 partition_col"
+                )
+            overwrite_by_partition(
+                data,
+                self.table_name,
+                self.partition_col,
+                engine=self.engine,
+                primary_keys=self.primary_keys,
+            )
+        else:
+            ok = save_to_database(
+                data, self.table_name, self.write_mode, engine=self.engine
+            )
+            if not ok:
+                raise RuntimeError(
+                    f"{self.table_name} 落库失败（write_mode={self.write_mode}），"
+                    f"见上方 ERROR 日志"
+                )
         self.logger.info(
             f"{self.table_name} 落库 {len(data)} 行，write_mode={self.write_mode}"
         )

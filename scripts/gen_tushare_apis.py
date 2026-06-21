@@ -1,14 +1,25 @@
 """Step 4: 从 data/config/tushare_api.json 生成顶层 config/tushare_apis.json。
 
-每个接口加：
+⚠️⚠️ 已废弃，请勿运行 ⚠️⚠️（2026-06 起）
+本脚本是项目初始化期一次性生成 config/tushare_apis.json 的工具，其 STRATEGY_MAP
+已严重过时：财务/分红仍写 by_ann_date、仅 22 接口（无 ETF 4 个）、无 write_mode/
+partition_col。而生产 config/tushare_apis.json 已手工演进为 26 接口 + 4 类策略
+（by_trade_date/by_period/by_ex_date/full_refresh）+ overwrite/truncate。
+**重跑本脚本会把正确配置覆盖回旧的错误值。** 增删接口请直接改 config/tushare_apis.json
+和 data/etl/loader.py（见 CLAUDE.md §5.4/§5.5），不要用本脚本再生成。
+保留仅作历史参考。
+
+（历史说明）每个接口加：
 - incremental_strategy: by_trade_date / by_ann_date / full_refresh
 - biz_date_col: trade_date / ann_date / ""
-
-策略分配依据（CLAUDE.md 2.5 / 硬约束 8）：
-- by_trade_date: 行情类（按 trade_date 区间拉）
-- by_ann_date:   财务/事件类（按 ann_date 区间拉，覆盖修订）
-- full_refresh:  基础信息类（低频全量刷新）
 """
+import sys
+
+print(
+    "[gen_tushare_apis] 本脚本已废弃且会覆盖已演进的正确配置，已阻止运行。\n"
+    "增删接口请直接改 config/tushare_apis.json + data/etl/loader.py（见 CLAUDE.md §5.4/§5.5）。"
+)
+sys.exit(1)
 import json
 from pathlib import Path
 

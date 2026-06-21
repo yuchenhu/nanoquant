@@ -7,8 +7,8 @@ tushare>=1.4,<2.0
 requests>=2.31,<3.0
 
 # ===== 数据处理 =====
-pandas>=2.2,<3.0
-numpy>=2.0,<3.0
+pandas>=2.2,<4.0
+numpy>=2.0,<4.0
 scipy>=1.13,<2.0
 statsmodels>=0.14,<1.0
 numba>=0.60,<1.0

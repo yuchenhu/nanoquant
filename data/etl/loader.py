@@ -1,20 +1,21 @@
-"""接入层 Calculator（22 个 tushare 接口 1:1 复刻）。
+"""接入层 Calculator（26 个 tushare 接口 1:1 复刻）。
 
 每个 Calculator 声明 config_key（对应 config/tushare_apis.json），继承对应中间基类：
-- 行情类 → TushareByTradeDateCalculator（逐交易日拉）
-- 财务类 → TushareByAnnDateCalculator（按 ann_date 区间拉 + 回看覆盖修订）
-- 基础信息类 → TushareFullRefreshCalculator（全量 truncate）
+- 行情类 → TushareByTradeDateCalculator（逐交易日 overwrite）
+- 财务三表+披露 → TushareByPeriodCalculator（按报告期 period 取全市场 overwrite/end_date）
+- 分红 → TushareByExDateCalculator（按除权日 ex_date 取 overwrite/ex_date）
+- 基础信息/ETF清单 → TushareFullRefreshCalculator（全量 truncate）
 
-特殊接口（需遍历参数）覆盖 fetch_one_period：
+特殊接口（需遍历参数）覆盖 fetch_one_period / get_data：
 - TradeCalCalculator: 全量拉（start_date=20100101, end_date=今天）
 - StockBasicCalculator: 遍历 list_status=L/D
 - IndexMemberAllCalculator: 遍历 is_new=Y/N
-- IndexDailyCalculator / IndexDailyBasicCalculator: 遍历 index_codes
-- IndexWeightCalculator: 遍历 index_codes + 月份区间
+- IndexDailyCalculator / IndexDailyBasicCalculator: 遍历 INDEX_CODES × 区间取数（_IndexByRangeMixin）
+- IndexWeightCalculator: 月频，遍历 INDEX_CODES，每月最后交易日取一次
 - IndexClassifyCalculator: src=SW2021
 
 统一入口 update(start_date, end_date, **params)（来自 BaseCalculator）：
-- 不传日期 = 从 etl_biz_date 水位次日续跑（增量）
+- 不传日期 = 增量（行情从水位续跑；财务/分红从 min(水位, today-保守窗口) 起）
 - 传日期 = 按 biz_date 区间回补
 """
 from __future__ import annotations
@@ -28,18 +29,76 @@ import pandas as pd
 from core.dates import get_today_str
 from data.etl.base import (
     TushareByAnnDateCalculator,
+    TushareByExDateCalculator,
+    TushareByPeriodCalculator,
     TushareByTradeDateCalculator,
     TushareFullRefreshCalculator,
 )
+# 指数池定义在 config/universe.py（接入层+下游共用的单一事实源）。
+# 接入层用 ALL_INDEX_CODES（含双版冗余，保证任何年份成分不漏）；
+# 下游去重用 config.universe.CANONICAL_INDEX_CODES + CODE_TO_CANONICAL。
+from config.universe import ALL_INDEX_CODES as INDEX_CODES
 
 logger = logging.getLogger(__name__)
 
-# 关心的指数代码（沪深主要宽基 + 申万）
-INDEX_CODES: List[str] = [
-    "000300.SH", "000852.SH", "000905.SH", "000906.SH",
-    "000922.CSI", "000985.CSI", "399300.SZ", "399852.SZ",
-    "399905.SZ", "930955.CSI", "932000.CSI",
-]
+
+class _IndexByRangeMixin:
+    """指数类接入层混入：遍历 INDEX_CODES，每个指数按区间一次取数（高效）。
+
+    用于 index_daily / index_dailybasic —— 这两个接口支持 ts_code + start_date/
+    end_date 区间，一个指数一次拿整段历史（fetch_tushare 自动分页）。
+
+    覆盖 get_data（区间路径，回补/增量主路径）：遍历 18 个指数 × 区间
+      → 1 年约 18 次 API 调用（每指数 1 次，含分页）。
+    对比旧实现 fetch_one_period 逐交易日 × 逐指数单条取：1 年约 240×18=4320 次、
+    每次只返回 1 行 → 浪费 ~99% API。数据结果完全一致。
+
+    保留 fetch_one_period（单日 × 遍历指数）作兜底，供未走 get_data 的场景。
+    """
+
+    def get_data(self, start_date=None, end_date=None, **params):
+        import time as _time
+
+        if not start_date or not end_date:
+            self.logger.warning(
+                f"{self.table_name}.get_data 需要 start_date 和 end_date"
+            )
+            return pd.DataFrame()
+
+        self.logger.info(
+            f"{self.table_name}.get_data 按指数×区间取数：{len(INDEX_CODES)} 个指数 "
+            f"[{start_date}, {end_date}]"
+        )
+        frames = []
+        for i, code in enumerate(INDEX_CODES):
+            try:
+                df = self.fetch_tushare(
+                    ts_code=code, start_date=start_date, end_date=end_date, **params
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"{self.table_name}.fetch_tushare(ts_code={code}) 失败: {e}"
+                )
+                continue
+            if df is not None and len(df) > 0:
+                frames.append(df)
+            if (i + 1) % 5 == 0:
+                _time.sleep(0.3)  # 防 tushare 限频
+
+        if not frames:
+            return pd.DataFrame()
+        combined = pd.concat(frames, ignore_index=True)
+        self.logger.info(f"{self.table_name}.get_data 完成，共 {len(combined)} 行")
+        return combined
+
+    def fetch_one_period(self, trade_date: str, **params):
+        # 兜底：单日 × 遍历指数（增量单日等场景，主路径走 get_data 区间）
+        frames = []
+        for code in INDEX_CODES:
+            df = self.fetch_tushare(ts_code=code, trade_date=trade_date, **params)
+            if df is not None and not df.empty:
+                frames.append(df)
+        return pd.concat(frames, ignore_index=True) if frames else None
 
 
 # ==================== full_refresh: 基础信息类（5 个） ====================
@@ -79,6 +138,7 @@ class IndexBasicCalculator(TushareFullRefreshCalculator):
     config_key = "index_basic"
     table_name = "index_basic"
     primary_keys = ["ts_code"]
+    type_overrides = {"desc": "TEXT"}  # 指数描述常超 255 字符，用 TEXT
 
 
 class IndexClassifyCalculator(TushareFullRefreshCalculator):
@@ -174,52 +234,83 @@ class SwDailyCalculator(TushareByTradeDateCalculator):
     primary_keys = ["ts_code", "trade_date"]
 
 
-class IndexDailyCalculator(TushareByTradeDateCalculator):
-    """指数日线行情（遍历 index_codes）。"""
+class IndexDailyCalculator(_IndexByRangeMixin, TushareByTradeDateCalculator):
+    """指数日线行情（遍历 index_codes × 区间取数）。"""
     config_key = "index_daily"
     table_name = "index_daily"
     primary_keys = ["ts_code", "trade_date"]
 
-    def fetch_one_period(self, trade_date: str, **params) -> Optional[pd.DataFrame]:
-        frames = []
-        for code in INDEX_CODES:
-            df = self.fetch_tushare(ts_code=code, trade_date=trade_date, **params)
-            if df is not None and not df.empty:
-                frames.append(df)
-        if not frames:
-            return None
-        return pd.concat(frames, ignore_index=True)
 
-
-class IndexDailyBasicCalculator(TushareByTradeDateCalculator):
-    """指数每日指标（遍历 index_codes）。"""
+class IndexDailyBasicCalculator(_IndexByRangeMixin, TushareByTradeDateCalculator):
+    """指数每日指标（遍历 index_codes × 区间取数）。"""
     config_key = "index_dailybasic"
     table_name = "index_daily_basic"
     primary_keys = ["ts_code", "trade_date"]
 
-    def fetch_one_period(self, trade_date: str, **params) -> Optional[pd.DataFrame]:
-        frames = []
-        for code in INDEX_CODES:
-            df = self.fetch_tushare(ts_code=code, trade_date=trade_date, **params)
-            if df is not None and not df.empty:
-                frames.append(df)
-        if not frames:
-            return None
-        return pd.concat(frames, ignore_index=True)
-
 
 class IndexWeightCalculator(TushareByTradeDateCalculator):
-    """指数成分股权重（遍历 index_codes + 月份区间）。
+    """指数成分股权重（月频：每月最后交易日取一次，遍历 index_codes）。
 
-    by_trade_date 逐日调，但 index_weight 是月频。fetch_one_period(trade_date=...)
-    把 trade_date 当月末，算当月区间 [月初, trade_date] 遍历 index_codes 拉。
+    index_weight 是月度数据。覆盖 get_data 只对「区间内每月最后交易日」调
+    fetch_one_period（内部查 [月初, 月末] 整月区间），避免逐交易日重复拉取
+    同月数据（旧实现 23 个交易日重复拉 23 次 → 13200 行重复 + 浪费 95% API）。
     """
     config_key = "index_weight"
     table_name = "index_weight"
     primary_keys = ["index_code", "con_code", "trade_date"]
 
+    def get_data(
+        self, start_date: Optional[str] = None, end_date: Optional[str] = None, **params
+    ) -> pd.DataFrame:
+        import time as _time
+
+        from core.dates import get_trade_dates_between
+
+        if not start_date or not end_date:
+            self.logger.warning(
+                f"{self.table_name}.get_data 需要 start_date 和 end_date"
+            )
+            return pd.DataFrame()
+
+        trade_dates = get_trade_dates_between(start_date, end_date)
+        if not trade_dates:
+            self.logger.info(
+                f"{self.table_name}.get_data 区间 [{start_date}, {end_date}] 无交易日"
+            )
+            return pd.DataFrame()
+
+        # 每月最后交易日（按 yyyymm 分组，升序遍历后者覆盖 = 该月最后一个交易日）
+        month_last = {}
+        for td in sorted(trade_dates):
+            month_last[td[:6]] = td
+        month_ends = sorted(month_last.values())
+        self.logger.info(
+            f"{self.table_name}.get_data 月频取数：{len(trade_dates)} 个交易日 "
+            f"→ {len(month_ends)} 个月末（{month_ends[0]}~{month_ends[-1]}）"
+        )
+
+        frames = []
+        for i, td in enumerate(month_ends):
+            try:
+                df = self.fetch_one_period(trade_date=td, **params)
+            except Exception as e:
+                self.logger.warning(
+                    f"{self.table_name}.fetch_one_period(month_end={td}) 失败: {e}"
+                )
+                continue
+            if df is not None and len(df) > 0:
+                frames.append(df)
+            if (i + 1) % 5 == 0:
+                _time.sleep(0.3)
+
+        if not frames:
+            return pd.DataFrame()
+        combined = pd.concat(frames, ignore_index=True)
+        self.logger.info(f"{self.table_name}.get_data 完成，共 {len(combined)} 行")
+        return combined
+
     def fetch_one_period(self, trade_date: str, **params) -> Optional[pd.DataFrame]:
-        # 月初 = trade_date 当月 1 号
+        # 月初 = trade_date 当月 1 号；查 [月初, 月末] 整月区间
         td = datetime.strptime(trade_date, "%Y%m%d")
         month_start = td.replace(day=1).strftime("%Y%m%d")
         frames = []
@@ -237,84 +328,102 @@ class IndexWeightCalculator(TushareByTradeDateCalculator):
         return pd.concat(frames, ignore_index=True)
 
 
-# ==================== by_ann_date: 财务类（5 个） ====================
+# ==================== by_period/by_ex_date: 财务三表 + 分红 + 披露（5 个） ====================
 
-class IncomeCalculator(TushareByAnnDateCalculator):
-    """利润表（按 ann_date 增量）。"""
+class IncomeCalculator(TushareByPeriodCalculator):
+    """利润表（按报告期 period 取数 + overwrite 覆盖）。
+
+    PK 用 5 列联合（实测 25 万行 0 重复）。约束：tushare income_vip 默认只返回
+    report_type=1（合并报表）；若改拉其他 report_type，必须把 report_type 加进 PK。
+    """
     config_key = "income_vip"
     table_name = "income"
-    primary_keys = ["ts_code", "end_date", "report_type", "comp_type"]
+    primary_keys = ["ts_code", "end_date", "ann_date", "f_ann_date", "update_flag"]
+    write_mode = "overwrite"
+    partition_col = "end_date"
 
 
-class BalancesheetCalculator(TushareByAnnDateCalculator):
-    """资产负债表（按 ann_date 增量）。"""
+class BalancesheetCalculator(TushareByPeriodCalculator):
+    """资产负债表（按报告期 period 取数 + overwrite 覆盖）。"""
     config_key = "balancesheet_vip"
     table_name = "balancesheet"
-    primary_keys = ["ts_code", "end_date", "report_type", "comp_type"]
+    primary_keys = ["ts_code", "end_date", "ann_date", "f_ann_date", "update_flag"]
+    write_mode = "overwrite"
+    partition_col = "end_date"
 
 
-class CashflowCalculator(TushareByAnnDateCalculator):
-    """现金流量表（按 ann_date 增量）。"""
+class CashflowCalculator(TushareByPeriodCalculator):
+    """现金流量表（按报告期 period 取数 + overwrite 覆盖）。"""
     config_key = "cashflow_vip"
     table_name = "cashflow"
-    primary_keys = ["ts_code", "end_date", "report_type", "comp_type"]
+    primary_keys = ["ts_code", "end_date", "ann_date", "f_ann_date", "update_flag"]
+    write_mode = "overwrite"
+    partition_col = "end_date"
 
 
-class DividendCalculator(TushareByAnnDateCalculator):
-    """分红送股（按 ann_date 增量）。
+class DividendCalculator(TushareByExDateCalculator):
+    """分红送股（按除权除息日 ex_date 取数 + overwrite 覆盖）。
 
-    tushare dividend 不支持 start_date/end_date 区间，只支持 ann_date 单日。
-    覆盖 fetch_one_period 逐 ann_date 调。
+    只关心真实分红：ex_date 非空的"实施"记录才被命中，自动过滤预案/股东大会通过。
+    旧实现逐 ann_date 自然日（365 次/年）+ 漏 ann_date=null；新实现按 ex_date 逐
+    交易日拉全市场，配合 overwrite(partition_col=ex_date) 幂等。
     """
     config_key = "dividend"
     table_name = "dividend"
-    primary_keys = ["ts_code", "end_date", "ann_date", "div_proc"]
-
-    def fetch_one_period(
-        self, start_ann_date: str, end_ann_date: str, **params
-    ) -> Optional[pd.DataFrame]:
-        # dividend 不支持区间，逐日调 ann_date（公告日不一定是交易日，枚举自然日）
-        start = datetime.strptime(start_ann_date, "%Y%m%d")
-        end = datetime.strptime(end_ann_date, "%Y%m%d")
-        frames = []
-        cur = start
-        while cur <= end:
-            ann_d = cur.strftime("%Y%m%d")
-            df = self.fetch_tushare(ann_date=ann_d, **params)
-            if df is not None and not df.empty:
-                frames.append(df)
-            cur += timedelta(days=1)
-        if not frames:
-            return None
-        return pd.concat(frames, ignore_index=True)
+    primary_keys = ["ts_code", "end_date", "ann_date", "div_proc", "update_flag"]
+    write_mode = "overwrite"
+    partition_col = "ex_date"
 
 
-class DisclosureDateCalculator(TushareByAnnDateCalculator):
-    """财报披露日期（按 ann_date 增量）。
+class DisclosureDateCalculator(TushareByPeriodCalculator):
+    """财报披露日期（按报告期 end_date 取数 + overwrite 覆盖）。
 
-    tushare disclosure_date 支持 end_date（报告期）但不支持 ann_date 区间。
-    用 ann_date 单日逐日调（同 dividend）。
+    官方文档：disclosure_date 取数参数是 end_date(报告期)，不支持 ann_date 区间。
+    旧实现用 ann_date 逐日调，会漏掉所有 ann_date=null 的记录（早期/部分新股）；
+    改按 end_date(报告期) 拉一次得全市场该期完整数据，无遗漏。
+
+    继承 ByPeriodCalculator（内部按 period 拆分），覆盖 fetch_one_period 把内部
+    period 映射到 tushare 的 end_date 参数。
     """
     config_key = "disclosure_date"
     table_name = "disclosure_date"
     primary_keys = ["ts_code", "end_date"]
+    write_mode = "overwrite"
+    partition_col = "end_date"
 
-    def fetch_one_period(
-        self, start_ann_date: str, end_ann_date: str, **params
-    ) -> Optional[pd.DataFrame]:
-        start = datetime.strptime(start_ann_date, "%Y%m%d")
-        end = datetime.strptime(end_ann_date, "%Y%m%d")
-        frames = []
-        cur = start
-        while cur <= end:
-            ann_d = cur.strftime("%Y%m%d")
-            df = self.fetch_tushare(ann_date=ann_d, **params)
-            if df is not None and not df.empty:
-                frames.append(df)
-            cur += timedelta(days=1)
-        if not frames:
-            return None
-        return pd.concat(frames, ignore_index=True)
+    def fetch_one_period(self, period: str, **params) -> Optional[pd.DataFrame]:
+        # period 即报告期，tushare disclosure_date 用 end_date 参数接收
+        return self.fetch_tushare(end_date=period, **params)
+
+
+# ==================== fund: 场内基金/ETF（4 个） ====================
+
+class FundBasicCalculator(TushareFullRefreshCalculator):
+    """基金基本信息（场内 ETF/LOF，market=E，全量刷新）。"""
+    config_key = "fund_basic"
+    table_name = "fund_basic"
+    primary_keys = ["ts_code"]
+
+
+class FundDailyCalculator(TushareByTradeDateCalculator):
+    """场内基金日线行情（逐交易日拉全市场）。"""
+    config_key = "fund_daily"
+    table_name = "fund_daily"
+    primary_keys = ["ts_code", "trade_date"]
+
+
+class FundAdjCalculator(TushareByTradeDateCalculator):
+    """基金复权因子（逐交易日拉全市场）。"""
+    config_key = "fund_adj"
+    table_name = "fund_adj"
+    primary_keys = ["ts_code", "trade_date"]
+
+
+class FundShareCalculator(TushareByTradeDateCalculator):
+    """基金规模/每日份额（逐交易日拉全市场，含场内场外）。"""
+    config_key = "fund_share"
+    table_name = "fund_share"
+    primary_keys = ["ts_code", "trade_date"]
 
 
 # ===== 任务注册表（供 runner 通过 class_path 找到） =====
@@ -341,4 +450,8 @@ CALCULATORS = {
     "cashflow": CashflowCalculator,
     "dividend": DividendCalculator,
     "disclosure_date": DisclosureDateCalculator,
+    "fund_basic": FundBasicCalculator,
+    "fund_daily": FundDailyCalculator,
+    "fund_adj": FundAdjCalculator,
+    "fund_share": FundShareCalculator,
 }

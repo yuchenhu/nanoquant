@@ -21,13 +21,13 @@
     },
     {
       "task_id": "fin_statement_panel",
-      "class": "data.panel.fin_statement_panel.FinancialStatementsSnapshotCalculator",
+      "class": "data.panel.financial_statements_snapshot.FinancialStatementsSnapshotCalculator",
       "description": "个股×报告期 财务三表合并",
       "depends_on": ["income", "balancesheet", "cashflow"]
     },
     {
       "task_id": "fin_indicator_snapshot",
-      "class": "data.panel.fin_indicator_snapshot.FinancialIndicatorsSnapshotCalculator",
+      "class": "data.panel.financial_indicators_snapshot.FinancialIndicatorsSnapshotCalculator",
       "description": "个股×快照日 财务指标",
       "depends_on": ["fin_statement_panel"]
     },
@@ -63,7 +63,7 @@
     },
     {
       "task_id": "factor_valuation",
-      "class": "data.factor.valuation.ValuationFactorCalculator",
+      "class": "data.factor.valuation.ValuationCalculator",
       "description": "估值因子",
       "depends_on": ["stock_daily_panel", "fin_indicator_snapshot"]
     },
@@ -83,7 +83,7 @@
     },
     {
       "task_id": "stock_mv_monthly",
-      "class": "data.panel.stock_mv_monthly.MvMonthlyCalculator",
+      "class": "data.panel.mv_monthly.MvMonthlyCalculator",
       "description": "个股×月 市值",
       "depends_on": ["stock_daily_panel"]
     }

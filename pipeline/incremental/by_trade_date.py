@@ -5,6 +5,7 @@
 子类实现 fetch_one_period(trade_date=YYYYMMDD, **params) -> DataFrame。
 """
 import logging
+import time
 from typing import List, Optional
 
 import pandas as pd
@@ -44,7 +45,7 @@ class ByTradeDateCalculator(BaseIncremental):
         )
 
         results: List[pd.DataFrame] = []
-        for td in trade_dates:
+        for i, td in enumerate(trade_dates):
             try:
                 df = self.fetch_one_period(trade_date=td, **params)
             except Exception as e:
@@ -53,6 +54,9 @@ class ByTradeDateCalculator(BaseIncremental):
             if df is None or len(df) == 0:
                 continue
             results.append(df)
+            # 每 10 个交易日 sleep 一下，避免 tushare 限频
+            if (i + 1) % 10 == 0:
+                time.sleep(0.5)
 
         if not results:
             return pd.DataFrame()

@@ -146,6 +146,107 @@ def save_to_database(
         return False
 
 
+def overwrite_by_partition(
+    df: pd.DataFrame,
+    table_name: str,
+    partition_col: str,
+    engine=engine,
+    primary_keys: Optional[list] = None,
+) -> int:
+    """INSERT OVERWRITE 语义（dataworks 风格）：先删本批分区，再批量 append。
+
+    幂等保证：删除维度(partition_col) == 取数维度。重跑 = 删该批分区全部 + 写该批分区全部。
+    不脏保证：删除粒度(partition_col) ⊇ 写入粒度，旧数据全清后再写，不残留、不交叉。
+
+    分区键示例：
+      - 行情类   partition_col = "trade_date"（按交易日覆盖）
+      - 财务类   partition_col = "end_date"（按报告期覆盖）
+      - 分红     partition_col = "ex_date"（按除权日覆盖）
+
+    去重护栏（primary_keys 非空时启用）：
+      - 落库前按主键去重，避免数据源偶发重复导致 to_sql append 主键冲突报错
+      - 若有 update_flag 列：保留 update_flag 最大的版本（留修正版）
+      - 否则：保留最后一条
+      - 关键：去掉重复行时打 WARNING 并显式列出被删的主键值，便于人工核查数据源
+        （不静默吞掉，符合"业务有意义的重复不能被无声 drop"的要求）
+
+    在同一事务内 DELETE + INSERT，失败回滚，不会出现"删了没写"的空窗。
+    """
+    if df is None or df.empty:
+        logger.warning(f"{table_name} overwrite 跳过：空数据")
+        return 0
+
+    if partition_col not in df.columns:
+        raise ValueError(
+            f"{table_name} overwrite 失败：分区列 {partition_col} 不在数据列中"
+        )
+
+    # ===== 去重护栏：按主键去重 + 显式告警 =====
+    if primary_keys:
+        pk_in_df = [c for c in primary_keys if c in df.columns]
+        if pk_in_df:
+            dup_mask = df.duplicated(subset=pk_in_df, keep=False)
+            n_dup = int(dup_mask.sum())
+            if n_dup > 0:
+                # 显式列出被判定为重复的主键组合（最多 20 组，防日志爆炸）
+                dup_keys = (
+                    df.loc[dup_mask, pk_in_df]
+                    .drop_duplicates()
+                    .head(20)
+                    .to_dict("records")
+                )
+                logger.warning(
+                    "!!! %s 发现 %d 行重复主键（主键=%s），数据源可能异常，请人工核查 !!!",
+                    table_name, n_dup, pk_in_df,
+                )
+                for k in dup_keys:
+                    logger.warning("    重复主键: %s", k)
+                if len(dup_keys) == 20:
+                    logger.warning("    （仅显示前 20 组重复主键，可能还有更多）")
+
+                # 去重：有 update_flag 则留最大版本，否则留最后一条
+                before = len(df)
+                if "update_flag" in df.columns:
+                    df = df.copy()
+                    df["_uf"] = pd.to_numeric(
+                        df["update_flag"], errors="coerce"
+                    ).fillna(0)
+                    df = (
+                        df.sort_values(pk_in_df + ["_uf"])
+                        .drop_duplicates(subset=pk_in_df, keep="last")
+                        .drop(columns="_uf")
+                    )
+                else:
+                    df = df.drop_duplicates(subset=pk_in_df, keep="last")
+                logger.warning(
+                    "    去重处理：%d 行 → %d 行（删除 %d 行）",
+                    before, len(df), before - len(df),
+                )
+
+    # 本批涉及的分区值（去空 + 去重）。保留原始类型（date/str），由 SQLAlchemy 绑定
+    partitions = pd.Series(df[partition_col].dropna().unique()).tolist()
+    if not partitions:
+        logger.warning(f"{table_name} overwrite 跳过：分区值全空")
+        return 0
+
+    with engine.begin() as conn:
+        # 1) 删除本批分区的存量数据（参数化 IN，防注入 + 类型安全）
+        placeholders = ", ".join(f":p{i}" for i in range(len(partitions)))
+        params = {f"p{i}": v for i, v in enumerate(partitions)}
+        conn.execute(
+            text(f"DELETE FROM {table_name} WHERE {partition_col} IN ({placeholders})"),
+            params,
+        )
+        # 2) 批量写入（executemany，比逐行 upsert 快几十倍）
+        df.to_sql(name=table_name, con=conn, if_exists="append", index=False)
+
+    logger.info(
+        f"{table_name} overwrite 完成: {len(partitions)} 个分区, {len(df)} 行 "
+        f"({partition_col} 覆盖)"
+    )
+    return len(df)
+
+
 # ==================== 表结构查询（旧代码兼容） ====================
 
 def get_table_info(table_name: str) -> Dict[str, Any]:

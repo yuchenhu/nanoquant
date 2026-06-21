@@ -1,15 +1,17 @@
-"""接入层 Calculator 基类（tushare 拉数 + 三类增量策略）。
+"""接入层 Calculator 基类（tushare 拉数 + 增量策略）。
 
 设计（CLAUDE.md 2.1 / 2.5 / 硬约束 1/3/7/8）：
 - TushareClient: 单例 tushare pro 客户端（token 从 config.settings 读）
-- load_api_config(): 从 config/tushare_apis.json 加载 22 个接口配置
+- load_api_config(): 从 config/tushare_apis.json 加载 26 个接口配置
 - TushareCalculatorMixin: 提供 fetch_tushare(api_name, **params)（分页 + 重试）
-- 三个中间基类（继承策略基类 + Mixin），实现 fetch_one_period：
-    TushareByTradeDateCalculator: fetch_one_period(trade_date=...) → pro.api(trade_date=...)
-    TushareByAnnDateCalculator:   fetch_one_period(start_ann_date=..., end_ann_date=...) → pro.api(start_date=..., end_date=...)
-    TushareFullRefreshCalculator: fetch_one_period() → pro.api(**params)
+- 五个中间基类（继承策略基类 + Mixin），实现 fetch_one_period：
+    TushareByTradeDateCalculator: fetch_one_period(trade_date=...) → pro.api(trade_date=...)（overwrite）
+    TushareByPeriodCalculator:    fetch_one_period(period=...) → pro.api(period=...)（财务，overwrite/end_date）
+    TushareByExDateCalculator:    fetch_one_period(ex_date=...) → pro.api(ex_date=...)（分红，overwrite/ex_date）
+    TushareByAnnDateCalculator:   旧财务区间基类，保留兼容，已不用于生产
+    TushareFullRefreshCalculator: fetch_one_period() → pro.api(**params)（全量 truncate）
 
-22 个具体 Calculator（data/etl/loader.py）只声明 config_key，继承对应中间基类。
+26 个具体 Calculator（data/etl/loader.py）只声明 config_key，继承对应中间基类。
 """
 from __future__ import annotations
 
@@ -23,6 +25,8 @@ import pandas as pd
 
 from config.settings import settings
 from pipeline.incremental.by_ann_date import ByAnnDateCalculator
+from pipeline.incremental.by_ex_date import ByExDateCalculator
+from pipeline.incremental.by_period import ByPeriodCalculator
 from pipeline.incremental.by_trade_date import ByTradeDateCalculator
 from pipeline.incremental.full_refresh import FullRefreshCalculator
 
@@ -33,17 +37,22 @@ _pro_client = None
 
 
 def get_pro_client():
-    """获取 tushare pro 客户端（单例）。token 从 settings 读。"""
+    """获取 tushare pro 客户端（单例）。token 从 settings 读。
+
+    用环境变量传 token，避免 ts.set_token() 写 ~/tk.csv（后台进程可能无权限）。
+    """
     global _pro_client
     if _pro_client is None:
+        import os
         import tushare as ts
         token = settings.tushare_token
         if not token:
             raise RuntimeError(
                 "TUSHARE_TOKEN 未配置，请在 .env 设置（见 .env.example）"
             )
-        ts.set_token(token)
-        _pro_client = ts.pro_api()
+        # 优先用环境变量（tushare get_token() 会先读环境变量，避免写 ~/tk.csv）
+        os.environ["TUSHARE_TOKEN"] = token
+        _pro_client = ts.pro_api(token)
         logger.info("tushare pro 客户端已初始化")
     return _pro_client
 
@@ -183,13 +192,16 @@ class TushareCalculatorMixin:
         return fetch_tushare(self.api_name, merged, fields=self.fields)
 
     def process_data(self, data: pd.DataFrame, **params) -> pd.DataFrame:
-        """接入层 process_data：只做 NaN/NaT → None（MySQL 兼容），不做类型转换。
+        """接入层 process_data：只把 inf/-inf → NaN，保留数值列 dtype。
 
-        类型转换由 core.schema.convert_date_columns + save_to_database 自动处理。
+        关键：不把 NaN → None（那会让 float64 列上溯成 object → schema 误判 VARCHAR）。
+        - inf/-inf → NaN：MySQL DOUBLE 不接受 inf，必须转掉
+        - NaN / NaT 保留：由 pandas to_sql 落库时自动写成 NULL，数值列 dtype 不被破坏
+        - 类型转换由 core.schema.convert_date_columns + save_to_database 自动处理
         """
         if data is None or data.empty:
             return data
-        return data.replace([float("nan"), float("inf"), float("-inf"), pd.NaT], None)
+        return data.replace([float("inf"), float("-inf")], float("nan"))
 
 
 # ===== 三个中间基类 =====
@@ -197,7 +209,12 @@ class TushareByTradeDateCalculator(TushareCalculatorMixin, ByTradeDateCalculator
     """行情类接入层基类（by_trade_date）。
 
     子类声明 config_key 即可。fetch_one_period(trade_date=...) 调 tushare。
+    统一 write_mode=overwrite + partition_col=trade_date：按交易日先删后写，幂等。
+    所有 by_trade_date 子类（daily/adj_factor/.../fund_daily/index_weight 等）自动生效。
     """
+
+    write_mode = "overwrite"
+    partition_col = "trade_date"
 
     def fetch_one_period(self, trade_date: str, **params) -> Optional[pd.DataFrame]:
         return self.fetch_tushare(trade_date=trade_date, **params)
@@ -216,6 +233,32 @@ class TushareByAnnDateCalculator(TushareCalculatorMixin, ByAnnDateCalculator):
         return self.fetch_tushare(
             start_date=start_ann_date, end_date=end_ann_date, **params
         )
+
+
+class TushareByPeriodCalculator(TushareCalculatorMixin, ByPeriodCalculator):
+    """财务类接入层基类（by_period）。
+
+    子类声明 config_key 即可。fetch_one_period(period=YYYYMMDD) → pro.api(period=...)
+    按报告期拉全市场全部版本。配合 write_mode=overwrite + partition_col=end_date 幂等。
+
+    注意：tushare 财务 vip 默认只返回 report_type=1（合并报表）。若子类需要其他
+    report_type，必须把 report_type 加进主键，否则会主键冲突丢数据。
+    """
+
+    def fetch_one_period(self, period: str, **params) -> Optional[pd.DataFrame]:
+        return self.fetch_tushare(period=period, **params)
+
+
+class TushareByExDateCalculator(TushareCalculatorMixin, ByExDateCalculator):
+    """分红类接入层基类（by_ex_date）。
+
+    子类声明 config_key 即可。fetch_one_period(ex_date=YYYYMMDD) → pro.api(ex_date=...)
+    按除权除息日拉全市场分红。配合 write_mode=overwrite + partition_col=ex_date 幂等。
+    只命中 ex_date 非空的"实施"分红，自动过滤预案/股东大会通过阶段。
+    """
+
+    def fetch_one_period(self, ex_date: str, **params) -> Optional[pd.DataFrame]:
+        return self.fetch_tushare(ex_date=ex_date, **params)
 
 
 class TushareFullRefreshCalculator(TushareCalculatorMixin, FullRefreshCalculator):

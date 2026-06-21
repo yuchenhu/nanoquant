@@ -49,15 +49,10 @@ class FactorCalculator(BaseCalculator):
 
     def __init__(self, engine=None):
         """初始化。engine 默认用全局 engine。"""
-        # 临时清空 table_name 让父类校验通过，再在下面加前缀
-        raw_name = self.table_name
-        self.table_name = ""
         super().__init__(engine=engine)
         # 加前缀（如果子类声明的 table_name 已含前缀则不重复加）
-        if raw_name.startswith(self.TABLE_PREFIX):
-            self.table_name = raw_name
-        else:
-            self.table_name = f"{self.TABLE_PREFIX}{raw_name}"
+        if not self.table_name.startswith(self.TABLE_PREFIX):
+            self.table_name = f"{self.TABLE_PREFIX}{self.table_name}"
         if not self.output_schema:
             self.logger.warning(
                 "%s 未声明 output_schema，将用自动推断（可能不准）",
