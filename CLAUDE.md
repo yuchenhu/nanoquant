@@ -1,10 +1,28 @@
 # nanoquant — 项目上下文与开发指南 (CLAUDE.md)
 
-> 给 AI Agent 和作者本人：本文件描述 nanoquant 的**当前架构**（已完成 Step 1-10 重构）、常用入口、核心 API 速查。
+> 给 AI Agent 和作者本人：本文件描述 nanoquant 的**当前架构**、常用入口、核心 API 速查。
 >
 > **最高原则：个人够用 + 云迁移友好 + 前期高维护后期中低维护。** 能复用就复用，不合理就改。
 >
 > 「约定」= 必须遵守；「建议」= 可讨论。
+
+---
+
+## 0. 新会话从这里开始（换环境/新 Agent 必读）
+
+**推荐阅读顺序**：本文件(架构+约定) → `ROADMAP.md`(下一步该做什么) → `TUSHARE_API_GUIDE.md`(数据层细节) → `README.md`(命令速查) → `scripts/README_sync.md`(补数用法)。
+
+**当前进度（2026-06）**：
+- ✅ **接入层完成**：26 个 tushare 接口（含 4 个 ETF），4 类增量策略（by_trade_date / by_period / by_ex_date / full_refresh），overwrite 幂等 + 去重护栏，schema 自动推断（数值 DOUBLE / 字符串两档），sync.py 补数入口。
+- 🔄 **进行中**：用 `scripts/backfill_years.py` 逐年回补 2010 至今历史数据，`scripts/data_audit.py` 体检。
+- ⏭️ **下一步**：compute 层开工，第一站 = `ROADMAP.md §1.0` panel 指数成分表（双版去重 + 时点成分），然后 panel → factor → label（因子按月采样）。
+
+**最关键的几条约定（动手前务必知道）**：
+1. 增删 tushare 接口 → 改 `config/tushare_apis.json` + `data/etl/loader.py`，**不要跑** `gen_tushare_apis`（已删）。
+2. 指数池在 `config/universe.py`（接入层用 ALL 含双版、下游用 CANONICAL 去重），见 §5.5。
+3. 写入统一 overwrite/truncate（废弃 upsert）；数值列统一 DOUBLE（见 §7.6/§8）。
+4. 战略方向：ETF 轮动为主引擎、多因子降为风控+拥挤监测（见 ROADMAP 末尾），不卷因子。
+5. `tests/test_step*` 是历史搭建验收测试，多数已与现状不符，**不是回归套件**，别依赖它判断对错。
 
 ---
 
