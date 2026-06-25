@@ -213,27 +213,6 @@ class MoneyflowCalculator(TushareByTradeDateCalculator):
     primary_keys = ["ts_code", "trade_date"]
 
 
-class MoneyflowHsgtCalculator(TushareByTradeDateCalculator):
-    """沪深港通资金流向（北向/南向，每日 1 行）。"""
-    config_key = "moneyflow_hsgt"
-    table_name = "moneyflow_hsgt"
-    primary_keys = ["trade_date"]
-
-
-class MarginCalculator(TushareByTradeDateCalculator):
-    """融资融券交易汇总（每日 3 行：SSE/SZSE/BSE，主键必须含 exchange_id）。"""
-    config_key = "margin"
-    table_name = "margin"
-    primary_keys = ["trade_date", "exchange_id"]
-
-
-class LimitListDCalculator(TushareByTradeDateCalculator):
-    """每日涨跌停/炸板（每只一行，主键必须含 ts_code；limit_type 留空一次取全 U/D/Z）。"""
-    config_key = "limit_list_d"
-    table_name = "limit_list_d"
-    primary_keys = ["trade_date", "ts_code"]
-
-
 class StockStCalculator(TushareByTradeDateCalculator):
     """ST 股票信息。"""
     config_key = "stock_st"
@@ -388,14 +367,10 @@ class DividendCalculator(TushareByExDateCalculator):
     只关心真实分红：ex_date 非空的"实施"记录才被命中，自动过滤预案/股东大会通过。
     旧实现逐 ann_date 自然日（365 次/年）+ 漏 ann_date=null；新实现按 ex_date 逐
     交易日拉全市场，配合 overwrite(partition_col=ex_date) 幂等。
-
-    主键用 ex_date 不用 ann_date：实施记录的 ann_date 在远古(1990s)及个别记录为
-    null，而 ann_date 是主键会违反 NOT NULL；ex_date 在实施记录里必非空、且是分红
-    核心维度。ann_date 降为普通列保留真实值（含 null）。
     """
     config_key = "dividend"
     table_name = "dividend"
-    primary_keys = ["ts_code", "end_date", "ex_date", "div_proc", "update_flag"]
+    primary_keys = ["ts_code", "end_date", "ann_date", "div_proc", "update_flag"]
     write_mode = "overwrite"
     partition_col = "ex_date"
 
@@ -463,9 +438,6 @@ CALCULATORS = {
     "adj_factor": AdjFactorCalculator,
     "daily_basic": DailyBasicCalculator,
     "moneyflow": MoneyflowCalculator,
-    "moneyflow_hsgt": MoneyflowHsgtCalculator,
-    "margin": MarginCalculator,
-    "limit_list_d": LimitListDCalculator,
     "index_basic": IndexBasicCalculator,
     "index_daily": IndexDailyCalculator,
     "index_dailybasic": IndexDailyBasicCalculator,

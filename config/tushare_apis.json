@@ -169,58 +169,6 @@
       "limit": 5000
     }
   },
-  "moneyflow_hsgt": {
-    "api_name": "moneyflow_hsgt",
-    "description": "沪深港通资金流向（北向/南向，每日1行）",
-    "table_name": "moneyflow_hsgt",
-    "incremental_strategy": "by_trade_date",
-    "biz_date_col": "trade_date",
-    "write_mode": "overwrite",
-    "frequency": "daily",
-    "fields": "trade_date,ggt_ss,ggt_sz,hgt,sgt,north_money,south_money",
-    "params": {
-      "trade_date": "",
-      "start_date": "",
-      "end_date": "",
-      "limit": 1000
-    }
-  },
-  "margin": {
-    "api_name": "margin",
-    "description": "融资融券交易汇总（每日3行：SSE/SZSE/BSE，次日9点更新）",
-    "table_name": "margin",
-    "incremental_strategy": "by_trade_date",
-    "biz_date_col": "trade_date",
-    "write_mode": "overwrite",
-    "frequency": "daily",
-    "fields": "trade_date,exchange_id,rzye,rzmre,rzche,rqye,rqmcl,rzrqye,rqyl",
-    "params": {
-      "trade_date": "",
-      "exchange_id": "",
-      "start_date": "",
-      "end_date": "",
-      "limit": 1000
-    }
-  },
-  "limit_list_d": {
-    "api_name": "limit_list_d",
-    "description": "每日涨跌停/炸板（每只一行，数据始于2020，不含ST）",
-    "table_name": "limit_list_d",
-    "incremental_strategy": "by_trade_date",
-    "biz_date_col": "trade_date",
-    "write_mode": "overwrite",
-    "frequency": "daily",
-    "fields": "trade_date,ts_code,industry,name,close,pct_chg,amount,limit_amount,float_mv,total_mv,turnover_ratio,fd_amount,first_time,last_time,open_times,up_stat,limit_times,limit",
-    "params": {
-      "trade_date": "",
-      "ts_code": "",
-      "limit_type": "",
-      "exchange": "",
-      "start_date": "",
-      "end_date": "",
-      "limit": 5000
-    }
-  },
   "index_basic": {
     "api_name": "index_basic",
     "description": "指数基本信息",

@@ -5,39 +5,6 @@
 
 ---
 
-## 0. 虚拟环境（每次开机 / 新终端第一步）
-
-项目依赖装在 `.venv` 里，跑任何脚本前先激活，否则会报 `No module named pandas` 之类的错。
-
-### 方案 A：启动器（推荐，无需激活）
-
-```cmd
-REM 用 scripts\py.bat，自动调用 .venv 里的 python
-scripts\py.bat scripts\sync.py
-scripts\py.bat scripts\backfill_years.py --from-year 2021 --to-year 2026
-scripts\py.bat scripts\data_audit.py
-```
-
-### 方案 B：手动激活（cmd）
-
-```cmd
-.venv\Scripts\activate
-python scripts\sync.py
-```
-
-激活后命令行前会出现 `(.venv)` 标记，说明切进去了。退出用 `deactivate`。
-
-### 方案 C：手动激活（PowerShell）
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python scripts\sync.py
-```
-
-> 下面所有示例用裸 `python`，记得先激活或用 `scripts\py.bat` 替换。
-
----
-
 ## 1. 日常用法（90% 的场景）
 
 ```bash

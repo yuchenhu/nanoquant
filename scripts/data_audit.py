@@ -57,7 +57,7 @@ for tbl, col in checks:
     try:
         r = q(f"SELECT COUNT(*), MIN({col}), MAX({col}) FROM `{tbl}`")[0]
         cnt, mn, mx = r[0], r[1], r[2]
-        flag = "  [EMPTY]" if cnt == 0 else ""
+        flag = "  ⚠️空表" if cnt == 0 else ""
         w(f"{tbl:<22}{cnt:>10}{str(mn):>12}{str(mx):>12}{flag}")
     except Exception as e:
         w(f"{tbl:<22} 查询失败: {e}")
@@ -76,9 +76,9 @@ for r in rows:
     # 合理性：交易日 240±15，日均股票数应随年份递增（1400→5400）
     flag = ""
     if days < 200 or days > 260:
-        flag += " [WARN:交易日异常]"
+        flag += " ⚠️交易日异常"
     if avg < 1000:
-        flag += " [WARN:股票数偏少]"
+        flag += " ⚠️股票数偏少"
     w(f"{y:<8}{days:>10}{n:>12}{avg:>10}{flag}")
 
 # ── 3. 行情异常值（价格<=0、pct_chg越界、成交额为负）──
@@ -87,13 +87,13 @@ checks3 = [
     ("close <= 0", "收盘价<=0"),
     ("`open` <= 0 OR high <= 0 OR low <= 0", "OHLC<=0"),
     ("high < low", "最高<最低"),
-    ("pct_chg > 30 OR pct_chg < -30", "涨跌幅>±30%(异常)"),
+    ("pct_chg > 25 OR pct_chg < -25", "涨跌幅>±25%(异常)"),
     ("vol < 0 OR amount < 0", "成交量额为负"),
 ]
 for cond, desc in checks3:
     try:
         n = q(f"SELECT COUNT(*) FROM stock_daily WHERE {cond}")[0][0]
-        flag = "  [WARN]" if n > 0 else "  [OK]"
+        flag = "  ⚠️" if n > 0 else "  ✓"
         w(f"  {desc:<24} {n:>8} 行{flag}")
     except Exception as e:
         w(f"  {desc}: {e}")
@@ -114,7 +114,7 @@ for tbl, col in null_checks:
         # pe_ttm 亏损股本就 NULL，允许高；其他关键列应接近 0
         flag = ""
         if col not in ("pe_ttm", "pe") and pct > 5:
-            flag = "  [WARN:NULL偏高]"
+            flag = "  ⚠️NULL偏高"
         w(f"  {tbl}.{col:<16} NULL {pct:>5}% ({nulls}/{total}){flag}")
     except Exception as e:
         w(f"  {tbl}.{col}: {e}")
@@ -128,7 +128,7 @@ rows = q("""
 """)
 for r in rows:
     ed, n = r[0], r[1]
-    flag = " [WARN:行数偏少]" if n < 3000 else ""
+    flag = " ⚠️行数偏少" if n < 3000 else ""
     w(f"  年报 {ed}: {n} 行{flag}")
 
 # ── 6. 复权因子合理性（应 >0，多数=1或略大）──
@@ -138,7 +138,7 @@ try:
     rr = q("SELECT MIN(adj_factor), MAX(adj_factor), ROUND(AVG(adj_factor),3) FROM adj_factor")[0]
     neg = q("SELECT COUNT(*) FROM adj_factor WHERE adj_factor<=0")[0][0]
     w(f"  范围 [{rr[0]}, {rr[1]}], 均值 {rr[2]}")
-    w(f"  <=0 的异常行: {neg}{'  [WARN]' if neg>0 else '  [OK]'}")
+    w(f"  <=0 的异常行: {neg}{'  ⚠️' if neg>0 else '  ✓'}")
 except Exception as e:
     w(f"  adj_factor: {e}")
 
