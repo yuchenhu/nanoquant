@@ -1,307 +1,126 @@
-"""市场×月 情绪 Panel（从 data/sql/market_sentiment_monthly.py 迁移）。
+"""市场x月 情绪/状态 Panel（regime 底表，第一性原理重设计）。
 
 表名：panel_market_sentiment_monthly
 主键：trade_date + dimension_type + dimension_value
-biz_date_col：trade_date（月末自然日 / 最新月用最后交易日）
-依赖：market_sentiment_daily（panel_market_sentiment_daily 的上游 panel_stock_daily + panel_stock_percentiles）
+biz_date_col：trade_date（月末交易日）
+write_mode：upsert
+
+================================ 设计原则 ================================
+1. 这是 regime 的"原始指标底表"：只存 level + 原始分量，不做标准化/趋势/合成
+   （那些是上层 factor_regime_features / factor_regime_score 的活）。
+2. 衍生指标必须同表存放其原始分量（如 ma_bull_align 必带 ma60/ma120/ma250）。
+3. 无未来函数：所有列都是截至本月末"当时可知"的回看窗口统计。
+4. 维度（dimension_type / dimension_value）：
+   - 'all'   全A          —— 全局 regime + 全市场独有指标（北向/两融/涨停家数）
+   - 'index' 上证50 / 沪深300 / 中证500 / 中证1000 / 中证2000 —— 风格维度 regime
+   说明：北向/两融/涨停为全市场口径，仅在 'all' 行有值，'index' 行为 NULL。
+        成分分布/估值/离散度按各指数成分计算，'all' 行按全A计算。
+
+================================ 上游来源 ================================
+追溯到接入层（不假设中间 panel 存在；待个股 panel 就绪后回填实现）：
+- 指数自身：index_daily / index_dailybasic
+- 成分归属：panel_index_membership_monthly（清洗后的月末成分，来自 index_weight）
+- 成分分布/估值/离散度：daily / daily_basic（+ 成分归属过滤）
+- 资金：moneyflow（主力）/ moneyflow_hsgt（北向）/ margin（两融）
+- 情绪：limit_list_d（涨跌停，数据始于2020）
+- ERP 国债收益率：手工维护的月度小表（绕过无权限的 yc_cb）
+
+实现状态：本版仅钉死 output_schema；get_data/process_data 为 TODO 占位，
+        返回空（update 会优雅跳过，不阻塞 pipeline）。待个股 panel 就绪后实现。
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
-import numpy as np
 import pandas as pd
 
 from data.panel.base import PanelCalculator
 
 logger = logging.getLogger(__name__)
 
+# 本表覆盖的指数维度（dimension_value）。全A 用 'all' 维度单独一行。
+INDEX_DIMENSIONS = ["上证50", "沪深300", "中证500", "中证1000", "中证2000"]
+
 
 class MarketSentimentMonthlyCalculator(PanelCalculator):
-    """市场×月 情绪（月度聚合：涨跌分布+主力资金+估值+百分位+均线，三维度）。"""
+    """市场x月 情绪/状态 底表（6 支柱核心指标，index 5 指数 + all 全A）。"""
 
-    table_name = "market_sentiment_monthly"  # → panel_market_sentiment_monthly
+    table_name = "market_sentiment_monthly"  # -> panel_market_sentiment_monthly
     primary_keys = ["trade_date", "dimension_type", "dimension_value"]
     biz_date_col = "trade_date"
     write_mode = "upsert"
+
+    # output_schema 钉死：列按 6 支柱分组。RAW=原始; DER=派生(同表带其原始分量)。
     output_schema = {
-        "trade_date": "string", "dimension_type": "string", "dimension_value": "string",
-        "stock_count": "int", "valid_count": "int",
-        "up_ratio": "float", "strong_up_ratio": "float", "down_ratio": "float", "strong_down_ratio": "float",
-        "avg_pct_chg": "float", "avg_up_pct_chg": "float", "avg_down_pct_chg": "float",
-        "avg_turnover_rate": "float", "total_amount": "float", "avg_amount": "float",
-        "total_volume": "float", "avg_volume": "float",
-        "main_buy_amount": "float", "main_sell_amount": "float",
-        "main_net_inflow": "float", "main_net_inflow_ratio": "float",
-        "avg_pe": "float", "avg_pe_ttm": "float", "avg_pb": "float",
-        "avg_price_tsrank_1y": "float", "avg_pe_tsrank_1y": "float",
-        "avg_pe_ttm_tsrank_1y": "float", "avg_pb_tsrank_1y": "float",
-        "avg_volatility_20": "float", "avg_volatility_60": "float", "avg_volatility_250": "float",
-        "above_ma20_ratio": "float", "below_ma20_ratio": "float",
-        "above_ma60_ratio": "float", "below_ma60_ratio": "float",
-        "above_ma250_ratio": "float", "below_ma250_ratio": "float",
+        # ---- 维度键 + 元信息 ----
+        "trade_date": "string",        # 月末交易日 YYYYMMDD
+        "dimension_type": "string",    # 'all' / 'index'
+        "dimension_value": "string",   # '全A' / 上证50 / 沪深300 / ...
+        "stock_count": "int",          # 该维度成分数量
+        "valid_count": "int",          # 有效样本数
+
+        # ===== 支柱1 趋势（指数自身价格行为）=====
+        "idx_close": "float",          # RAW 指数月末收盘
+        "ma60": "float",               # RAW 季线
+        "ma120": "float",              # RAW 半年线
+        "ma250": "float",              # RAW 年线（牛熊分水岭）
+        "ma_bull_align": "int",        # DER 多头排列(ma60>ma120>ma250) 0/1 [带 ma60/120/250]
+        "idx_ret_3m": "float",         # RAW 近3月指数收益
+        "idx_ret_6m": "float",         # RAW 近6月指数收益
+
+        # ===== 支柱2 广度（成分股分布，辨真假牛）=====
+        "up_count": "int",            # RAW 本月上涨成分家数
+        "down_count": "int",          # RAW 本月下跌成分家数
+        "big_up_count": "int",        # RAW 本月涨>10% 家数
+        "big_down_count": "int",      # RAW 本月跌<-10% 家数
+        "profit_ratio": "float",      # DER 赚钱效应=正收益占比 [带 up/down_count]
+        "pct_above_ma250": "float",   # DER 成分站上年线占比
+        "limit_up_count": "int",      # RAW 涨停家数（仅 'all'，来自 limit_list_d）
+
+        # ===== 支柱3 量能 =====
+        "idx_amount": "float",        # RAW 指数月度成交额
+        "amount_pct_1y": "float",     # DER 成交额1年分位 [带 idx_amount]
+
+        # ===== 支柱4 资金（全市场口径，仅 'all'）=====
+        "north_money": "float",          # RAW 北向净流入（moneyflow_hsgt）
+        "margin_balance": "float",       # RAW 两融余额（margin rzrqye）
+        "main_net_inflow_ratio": "float",# DER 主力净流入占比（moneyflow）
+
+        # ===== 支柱5 估值（跨周期高低估锚）=====
+        "pe_ttm_median": "float",     # RAW 成分 PE_TTM 中位数
+        "pb_median": "float",         # RAW 成分 PB 中位数
+        "pe_pct_5y": "float",         # DER PE 5年分位 [带 pe_ttm_median]
+        "pb_pct_5y": "float",         # DER PB 5年分位 [带 pb_median]
+        "erp": "float",               # DER 股债性价比=1/PE_TTM - 10Y国债 [带 pe_ttm_median]
+
+        # ===== 支柱6 波动/风险（辨趋势 vs 震荡）=====
+        "idx_volatility_60": "float",      # RAW 指数60日年化波动
+        "avg_correlation": "float",        # DER 成分平均两两相关（飙升=系统性同涨同跌）
+        "max_drawdown_1y": "float",        # DER 指数滚动1年最大回撤
     }
 
     def __init__(self, engine=None):
         super().__init__(engine=engine)
-        self.logger.info("MarketSentimentMonthlyCalculator 初始化")
+        self.logger.info("MarketSentimentMonthlyCalculator 初始化（schema 已钉死，实现待个股 panel）")
 
     def get_data(
         self, start_date: Optional[str] = None, end_date: Optional[str] = None, **params: Any
     ) -> pd.DataFrame:
-        stock_list: Optional[List[str]] = params.get("stock_list") or params.get("entity_list")
-        query = """
-        WITH ranked_daily_data AS (
-            SELECT ts_code, trade_date,
-                DATE_FORMAT(trade_date, '%%Y-%%m-01') as month_start,
-                open, high, low, close, amount, turnover_rate, vol, pct_chg,
-                buy_lg_amount, buy_elg_amount, sell_lg_amount, sell_elg_amount,
-                l1_name, total_mv, is_hs300, is_zz500, is_zz1000, is_zz2000,
-                pe, pe_ttm, pb,
-                ROW_NUMBER() OVER (PARTITION BY ts_code, DATE_FORMAT(trade_date, '%%Y-%%m-01') ORDER BY trade_date) as first_day_rn,
-                ROW_NUMBER() OVER (PARTITION BY ts_code, DATE_FORMAT(trade_date, '%%Y-%%m-01') ORDER BY trade_date DESC) as last_day_rn
-            FROM panel_stock_daily WHERE 1=1
-        """
-        if start_date:
-            query += f" AND trade_date >= '{start_date}'"
-        if end_date:
-            query += f" AND trade_date <= '{end_date}'"
-        if stock_list:
-            codes_str = ",".join([f"'{c}'" for c in stock_list])
-            query += f" AND ts_code IN ({codes_str})"
-        query += """
-        ),
-        ranked_percentiles_data AS (
-            SELECT ts_code, trade_date,
-                DATE_FORMAT(trade_date, '%%Y-%%m-01') as month_start,
-                price_tsrank_1y, pe_tsrank_1y, pe_ttm_tsrank_1y, pb_tsrank_1y,
-                ma20, ma60, ma250, close,
-                volatility_20, volatility_60, volatility_250,
-                ROW_NUMBER() OVER (PARTITION BY ts_code, DATE_FORMAT(trade_date, '%%Y-%%m-01') ORDER BY trade_date DESC) as last_day_rn
-            FROM panel_stock_percentiles WHERE 1=1
-        """
-        if start_date:
-            query += f" AND trade_date >= '{start_date}'"
-        if end_date:
-            query += f" AND trade_date <= '{end_date}'"
-        if stock_list:
-            codes_str = ",".join([f"'{c}'" for c in stock_list])
-            query += f" AND ts_code IN ({codes_str})"
-        query += """
-        ),
-        monthly_aggregates AS (
-            SELECT ts_code, month_start,
-                MAX(trade_date) as last_trade_date, MIN(trade_date) as first_trade_date,
-                MAX(high) as month_high, MIN(low) as month_low,
-                AVG(amount) as avg_daily_amount, AVG(turnover_rate) as avg_turnover_rate,
-                AVG(vol) as avg_daily_volume,
-                AVG(buy_lg_amount + buy_elg_amount) as avg_daily_main_buy,
-                AVG(sell_lg_amount + sell_elg_amount) as avg_daily_main_sell
-            FROM ranked_daily_data GROUP BY ts_code, month_start
-        ),
-        first_day_data AS (
-            SELECT ts_code, month_start, open as month_open
-            FROM ranked_daily_data WHERE first_day_rn = 1
-        ),
-        last_day_data AS (
-            SELECT ts_code, month_start, close as month_close,
-                l1_name as month_end_l1_name, total_mv as month_end_total_mv,
-                is_hs300 as month_end_is_hs300, is_zz500 as month_end_is_zz500,
-                is_zz1000 as month_end_is_zz1000, is_zz2000 as month_end_is_zz2000,
-                pe as month_end_pe, pe_ttm as month_end_pe_ttm, pb as month_end_pb
-            FROM ranked_daily_data WHERE last_day_rn = 1
-        ),
-        last_day_percentiles AS (
-            SELECT ts_code, month_start,
-                price_tsrank_1y, pe_tsrank_1y, pe_ttm_tsrank_1y, pb_tsrank_1y,
-                ma20, ma60, ma250, close as month_end_close,
-                volatility_20, volatility_60, volatility_250
-            FROM ranked_percentiles_data WHERE last_day_rn = 1
+        # TODO(impl): 待个股 panel + panel_index_membership_monthly 就绪后实现。
+        # 取数计划：
+        #   1. index_daily/index_dailybasic 取 5 指数 + 全A 基准的月末行情 -> 趋势/量能/波动
+        #   2. panel_index_membership_monthly 取月末成分归属 -> 过滤成分
+        #   3. daily/daily_basic 按成分聚合 -> 广度/估值/离散度
+        #   4. moneyflow_hsgt / margin / moneyflow / limit_list_d -> 资金/情绪（仅 'all'）
+        self.logger.warning(
+            "market_sentiment_monthly.get_data 未实现（schema 占位中），返回空"
         )
-        SELECT ma.ts_code, ma.month_start,
-            LAST_DAY(ma.month_start) as month_end_natural,
-            ma.last_trade_date, ma.first_trade_date,
-            ma.month_high, ma.month_low,
-            ma.avg_daily_amount, ma.avg_turnover_rate, ma.avg_daily_volume,
-            ma.avg_daily_main_buy, ma.avg_daily_main_sell,
-            fd.month_open, ld.month_close, ld.month_end_l1_name, ld.month_end_total_mv,
-            ld.month_end_is_hs300, ld.month_end_is_zz500, ld.month_end_is_zz1000, ld.month_end_is_zz2000,
-            CASE
-                WHEN ld.month_end_is_hs300 = 1 THEN '1.沪深300'
-                WHEN ld.month_end_is_zz500 = 1 THEN '2.中证500'
-                WHEN ld.month_end_is_zz1000 = 1 THEN '3.中证1000'
-                WHEN ld.month_end_is_zz2000 = 1 THEN '4.中证2000'
-                ELSE '5.其他'
-            END AS index_category,
-            ld.month_end_pe, ld.month_end_pe_ttm, ld.month_end_pb,
-            lp.price_tsrank_1y, lp.pe_tsrank_1y, lp.pe_ttm_tsrank_1y, lp.pb_tsrank_1y,
-            lp.ma20, lp.ma60, lp.ma250, lp.month_end_close,
-            lp.volatility_20, lp.volatility_60, lp.volatility_250
-        FROM monthly_aggregates ma
-        LEFT JOIN first_day_data fd ON ma.ts_code = fd.ts_code AND ma.month_start = fd.month_start
-        LEFT JOIN last_day_data ld ON ma.ts_code = ld.ts_code AND ma.month_start = ld.month_start
-        LEFT JOIN last_day_percentiles lp ON ma.ts_code = lp.ts_code AND ma.month_start = lp.month_start
-        ORDER BY ma.month_start, ma.ts_code
-        """
-        try:
-            return pd.read_sql(query, self.engine)
-        except Exception as e:
-            self.logger.error(f"获取月度数据失败: {e}")
-            return pd.DataFrame()
+        return pd.DataFrame()
 
     def process_data(self, data: pd.DataFrame, **params: Any) -> pd.DataFrame:
-        if data.empty:
+        # TODO(impl): 按 6 支柱计算各列；'all' 与 'index' 两类维度分别聚合。
+        # 衍生列必须与其原始分量一同输出（见 output_schema 注释 [带 ...]）。
+        if data is None or data.empty:
             return pd.DataFrame()
-        self.logger.info(f"开始计算月度市场热度，输入 {len(data)} 条")
-        df = self._preprocess_data(data)
-        df = self._add_dimension_labels(df)
-        dimensions = [('cap', 'cap_category'), ('index', 'index_category'), ('industry', 'l1_name')]
-        results = []
-        for dim_type, dim_col in dimensions:
-            r = self._calculate_dimension_sentiment(df, dim_type, dim_col)
-            if not r.empty:
-                results.append(r)
-        if not results:
-            return pd.DataFrame()
-        final = pd.concat(results, ignore_index=True)
-        if not final.empty:
-            max_td = final['last_trade_date'].max()
-            latest_month = final[final['last_trade_date'] == max_td]['month_start'].iloc[0]
-            final['trade_date'] = final.apply(
-                lambda row: row['last_trade_date'] if row['month_start'] == latest_month else row['month_end_natural'],
-                axis=1,
-            )
-        final = final.replace([np.nan, np.inf, -np.inf, pd.NaT], None)
-        for col in ['month_start', 'month_end_natural', 'last_trade_date', 'first_trade_date']:
-            if col in final.columns:
-                final = final.drop(col, axis=1)
-        if 'trade_date' in final.columns:
-            cols = ['trade_date'] + [c for c in final.columns if c != 'trade_date']
-            final = final[cols]
-        self.logger.info(f"月度市场热度完成: {len(final)} 条")
-        return final
-
-    def _preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
-        df['monthly_pct_chg'] = ((df['month_close'] - df['month_open']) / df['month_open'] * 100).fillna(0)
-        df['monthly_amplitude'] = ((df['month_high'] - df['month_low']) / df['month_open'] * 100).fillna(0)
-        df['avg_daily_amount'] = df['avg_daily_amount'] / 10000
-        df['avg_daily_main_buy'] = df['avg_daily_main_buy'] / 10000
-        df['avg_daily_main_sell'] = df['avg_daily_main_sell'] / 10000
-        df['avg_daily_main_net_inflow'] = df['avg_daily_main_buy'] - df['avg_daily_main_sell']
-        return df
-
-    def _add_dimension_labels(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        conditions = [
-            df['month_end_total_mv'] < 200000,
-            (df['month_end_total_mv'] >= 200000) & (df['month_end_total_mv'] < 500000),
-            (df['month_end_total_mv'] >= 500000) & (df['month_end_total_mv'] < 1000000),
-            (df['month_end_total_mv'] >= 1000000) & (df['month_end_total_mv'] < 3000000),
-            df['month_end_total_mv'] >= 3000000,
-        ]
-        choices = ['1.<20亿', '2.20-50亿', '3.50-100亿', '4.100-300亿', '5.>=300亿']
-        df['cap_category'] = np.select(conditions, choices, default='0.未知')
-        df['l1_name'] = df['month_end_l1_name'].fillna('未知行业')
-        return df
-
-    def _calculate_dimension_sentiment(self, df: pd.DataFrame, dim_type: str, dim_col: str) -> pd.DataFrame:
-        if df.empty:
-            return pd.DataFrame()
-        results = []
-        for (month_start, dim_value), group in df.groupby(['month_start', dim_col]):
-            if len(group) < 3:
-                continue
-            s = self._calculate_single_group_sentiment(group, month_start, dim_type, str(dim_value))
-            if s:
-                results.append(s)
-        return pd.DataFrame(results) if results else pd.DataFrame()
-
-    def _calculate_single_group_sentiment(
-        self, group: pd.DataFrame, month_start: str, dim_type: str, dim_value: str
-    ) -> Optional[Dict]:
-        try:
-            result = {
-                'month_start': month_start, 'dimension_type': dim_type, 'dimension_value': dim_value,
-                'stock_count': len(group), 'valid_count': group['monthly_pct_chg'].notna().sum(),
-                'last_trade_date': group['last_trade_date'].max(),
-                'month_end_natural': group['month_end_natural'].iloc[0],
-            }
-            if result['valid_count'] == 0:
-                return None
-            monthly_pct = group['monthly_pct_chg'].dropna()
-            up_mask = monthly_pct > 0
-            strong_up_mask = monthly_pct > 10
-            down_mask = monthly_pct < 0
-            strong_down_mask = monthly_pct < -10
-            result['up_ratio'] = round(up_mask.mean(), 4)
-            result['strong_up_ratio'] = round(strong_up_mask.mean(), 4)
-            result['down_ratio'] = round(down_mask.mean(), 4)
-            result['strong_down_ratio'] = round(strong_down_mask.mean(), 4)
-            result['avg_pct_chg'] = round(monthly_pct.mean(), 4)
-            up_pct = monthly_pct[up_mask]
-            down_pct = monthly_pct[down_mask]
-            result['avg_up_pct_chg'] = round(up_pct.mean(), 4) if not up_pct.empty else 0.0
-            result['avg_down_pct_chg'] = round(down_pct.mean(), 4) if not down_pct.empty else 0.0
-            turnover = group['avg_turnover_rate'].dropna()
-            if not turnover.empty:
-                result['avg_turnover_rate'] = round(turnover.mean(), 4)
-            amount = group['avg_daily_amount'].dropna()
-            if not amount.empty:
-                result['total_amount'] = round(amount.sum(), 4)
-                result['avg_amount'] = round(amount.mean(), 4)
-            volume = group['avg_daily_volume'].dropna()
-            if not volume.empty:
-                result['total_volume'] = round(volume.sum(), 4)
-                result['avg_volume'] = round(volume.mean(), 4)
-            if all(c in group.columns for c in ['avg_daily_main_buy', 'avg_daily_main_sell', 'avg_daily_main_net_inflow']):
-                main_buy = group['avg_daily_main_buy'].dropna()
-                main_sell = group['avg_daily_main_sell'].dropna()
-                net_inflow = group['avg_daily_main_net_inflow'].dropna()
-                if not main_buy.empty:
-                    result['main_buy_amount'] = round(main_buy.sum(), 4)
-                if not main_sell.empty:
-                    result['main_sell_amount'] = round(main_sell.sum(), 4)
-                if not net_inflow.empty and amount.sum() > 0:
-                    result['main_net_inflow'] = round(net_inflow.sum(), 4)
-                    result['main_net_inflow_ratio'] = round(net_inflow.sum() / amount.sum(), 4)
-            for pe_col, tgt in [('month_end_pe', 'avg_pe'), ('month_end_pe_ttm', 'avg_pe_ttm'), ('month_end_pb', 'avg_pb')]:
-                if pe_col in group.columns:
-                    values = group[pe_col].replace([np.inf, -np.inf], np.nan).dropna()
-                    values = values[(values > 0) & (values < 1000)]
-                    if not values.empty:
-                        result[tgt] = round(values.mean(), 4)
-            pct_cols = {
-                'price_tsrank_1y': 'avg_price_tsrank_1y', 'pe_tsrank_1y': 'avg_pe_tsrank_1y',
-                'pe_ttm_tsrank_1y': 'avg_pe_ttm_tsrank_1y', 'pb_tsrank_1y': 'avg_pb_tsrank_1y',
-            }
-            for src, tgt in pct_cols.items():
-                if src in group.columns:
-                    values = group[src].dropna()
-                    values = values[(values >= 0) & (values <= 1)]
-                    if not values.empty:
-                        result[tgt] = round(values.mean(), 4)
-            vol_cols = {'volatility_20': 'avg_volatility_20', 'volatility_60': 'avg_volatility_60', 'volatility_250': 'avg_volatility_250'}
-            for src, tgt in vol_cols.items():
-                if src in group.columns:
-                    values = group[src].dropna()
-                    values = values[values >= 0]
-                    if not values.empty:
-                        result[tgt] = round(values.mean(), 4)
-            if all(c in group.columns for c in ['month_end_close', 'ma20', 'ma60', 'ma250']):
-                valid = group[['month_end_close', 'ma20', 'ma60', 'ma250']].dropna()
-                if not valid.empty:
-                    above_ma20 = (valid['month_end_close'] > valid['ma20']).mean()
-                    above_ma60 = (valid['month_end_close'] > valid['ma60']).mean()
-                    above_ma250 = (valid['month_end_close'] > valid['ma250']).mean()
-                    result.update({
-                        'above_ma20_ratio': round(above_ma20, 4), 'below_ma20_ratio': round(1 - above_ma20, 4),
-                        'above_ma60_ratio': round(above_ma60, 4), 'below_ma60_ratio': round(1 - above_ma60, 4),
-                        'above_ma250_ratio': round(above_ma250, 4), 'below_ma250_ratio': round(1 - above_ma250, 4),
-                    })
-            return result
-        except Exception as e:
-            self.logger.warning(f"计算月度分组热度失败: {e}")
-            return None
+        return pd.DataFrame()

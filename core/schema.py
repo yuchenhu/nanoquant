@@ -123,7 +123,7 @@ def infer_mysql_type(col_name: str, dtype_str: str, override: Optional[str] = No
 _STR32_COLS = {
     "ts_code", "con_code", "index_code", "symbol",
     "report_type", "comp_type", "end_type", "div_proc", "suspend_type",
-    "suspend_timing", "type", "type_name", "list_status", "is_hs",
+    "type", "type_name", "list_status", "is_hs",
     "is_pub", "is_new", "src", "market", "exchange", "curr_type",
     "update_flag",
 }
@@ -158,8 +158,8 @@ def _infer_col_type(col_name: str, series: "pd.Series", override: Optional[str] 
         return _DTYPE_TO_MYSQL[dtype_str]
 
     # 3. object/string 列：按列名语义判断字符串列
-    if lname == "desc":
-        return "TEXT"             # 描述长文本
+    if lname == "desc" or lname == "suspend_timing":
+        return "TEXT"             # 描述长文本（suspend_timing 早年存停牌原因，可能超长）
     if lname in _NAME_COLS or lname.endswith("_name"):
         return "VARCHAR(255)"     # 名称/长文本
     if (
@@ -341,14 +341,15 @@ def _log_schema_change(
 # ==================== 日期列转换 ====================
 
 def convert_date_columns(df: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
-    """把 schema 中 DATE 类型的列从 yyyymmdd 字符串转成 datetime.date。
+    """把 schema 中 DATE 类型的列从 yyyymmdd / yyyy-mm-dd 字符串转成 datetime.date。
 
-    tushare 日期是 yyyymmdd 字符串，入库前需转 DATE。
+    tushare/接入层日期是 yyyymmdd；加工层输出可能是 yyyy-mm-dd（按约定）。
+    不用固定 format：pd.to_datetime 自动探测两种格式。
     """
     df = df.copy()
     for col_name, col_type in schema.items():
         if col_name not in df.columns:
             continue
         if col_type.upper() == "DATE":
-            df[col_name] = pd.to_datetime(df[col_name], format="%Y%m%d", errors="coerce").dt.date
+            df[col_name] = pd.to_datetime(df[col_name], errors="coerce").dt.date
     return df

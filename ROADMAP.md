@@ -8,25 +8,87 @@
 
 ## 阶段 0 · 当前已完成 ✅
 
-- [x] 26 个 tushare 接口接入（含 ETF：fund_basic/daily/adj/share）
+- [x] 29 个 tushare 接口接入（含 ETF：fund_basic/daily/adj/share）
 - [x] 4 类更新策略 + overwrite 幂等 + 去重护栏
 - [x] schema-as-code（数值 DOUBLE / 字符串两档自动推断）
 - [x] 增量起点 `min(水位, today-窗口)`（覆盖修订 + 久未开机不漏）
-- [x] sync.py 一键补数 + 逐年回补
+- [x] sync.py 一键补数 + 逐年回补 + `scripts/py.bat` 启动器（免激活）
 - [x] 防穿越基础（财务多版本保留 + f_ann_date）
+- [x] **+3 新接入源（2026-06-23）**：`moneyflow_hsgt`(北向) / `margin`(两融) / `limit_list_d`(涨跌停)，by_trade_date 自动纳入回补，已实拉验证
+- [x] **DQC 监控表（2026-06-25）**：`panel_data_quality` — 22 张接入源 × 每应有日期的实际行数监控表（status=OK/MISSING/PARTIAL），全量重算+truncate。接入层全量 DQC 通过：仅剩数据源特性异常（stock_st 早年、sw_daily/moneyflow_hsgt 休市日）和今日未拉。
+- [x] **scripts/py.bat 编码修复**：`chcp 65001 + PYTHONUTF8=1`，消除控制台中文 log 乱码。旧 `scripts/data_dqc.py` 已删（功能由 panel_data_quality 表替代）。
+- [x] **suspend_d / dividend 修复**：主键 `ann_date→ex_date`（dividend）+ 列类型 `suspend_timing→TEXT`，全量重补无报错。
+- [x] **panel_index_membership_monthly 实现（2026-06-25）**：长表 `(trade_date,ts_code,index_code,index_name,weight)`，四步清洗（双版归一/月内去重/月末网格/前向填充），全量 universe 15 指数，全历史回补完成。月级唯一保证：`overwrite+partition_col` + 落库前 DELETE 同月旧行。trade_date 存 MySQL DATE 类型。
+
+---
+
+## 阶段 0.5 · 部分落地的地基（schema 已钉死，实现挂 TODO）🔄
+
+> 已设计好 schema 并建成空表/占位 Calculator，待上游数据就绪后回填逻辑。
+> 对现有 pipeline 无破坏（update 返回空，优雅跳过）。
+
+**⚠️ 加工层日期格式统一规则**：接入层 `trade_date` 存的是 MySQL DATE 类型（`yyyy-mm-dd`），加工层所有新表的 `trade_date` / `biz_date_col` 输出统一用 **`yyyy-mm-dd` 字符串**，不用 `YYYYMMDD`。`BaseCalculator.update()` 传进来的 `start_date/end_date` 是 `YYYYMMDD` 格式，加工层内部 `pd.to_datetime` 统一处理，落库 `convert_date_columns` 自动转 DATE。**不在加工层做格式互转**。
+
+### 0.5a panel_index_membership_monthly（指数成分归属 · 清洗 index_weight）
+接入层 `index_weight` 有三处"脏"（已用 MCP + 本地库交叉验证）：
+1. 双版镜像（沪深300有 000300.SH/399300.SZ，成分逐行完全一致）→ 必须归一
+2. "月度"名不副实（沪深300一年 22~26 个 trade_date，其他 12 个）→ 必须月内去重
+3. 成分在两次调样间延续 → 必须月末网格 + 前向填充（无未来函数）
+加工这张干净底座。
+
+已钉死：
+- [x] schema：`(trade_date, ts_code, index_code, index_name, weight)`，长表，保留全量 universe 15 个 canonical 指数
+- [x] **清洗四步（带具体策略）**：
+  1. 双版归一 → `config.universe.CODE_TO_CANONICAL`（399300.SZ→000300.SH）
+  2. 月内去重 → 按 `(canonical, con_code, 年月)` GROUP，取该月最后 trade_date
+  3. 月末网格 → `core.dates.get_monthly_last_tradedate()` 构造标准月末交易日列表
+  4. 前向填充 → `bisect` + 分组 merge-asof（取 ≤ 该月的最近调样月成分）
+- [x] 已注册到 `data/panel/__init__.py` PANEL_CALCULATORS
+- [x] **READ_BUFFER_DAYS=400**：往前多读 400 天，保证区间首月能取到上一次调样
+- [x] **日期格式注意**：index_weight.trade_date 库里是 `yyyy-mm-dd`，用 `pd.to_datetime` 处理（不用字符串比较）
+- [x] **月级唯一保证（2026-06-25）**：`write_mode=overwrite + partition_col=trade_date`，`save_to_database` 落库前 `DELETE WHERE DATE_FORMAT(trade_date, '%Y-%m') IN (输出月份)`。7 月重算时旧月末快照被清掉，每月每个指数就一个 trade_date。
+- [x] **已注册 schedule_compute.json + 全历史回补完成**（15 指数，2010-01 ~ 今）
+- [ ] **下游消费**：market_sentiment_monthly 的成分分布列、stock_daily_panel 的 is_xxx 重构改读此表
+
+### 0.5b panel_market_sentiment_monthly（市场情绪底表 · regime 输入）
+从旧三维护(cap/index/industry)重建为 **index 5 指数 + all 全A** 两维，6 支柱 32 指标。
+旧文件已覆盖重写（`data/panel/market_sentiment_monthly.py`）。
+
+已钉死：
+- [x] **schema**：32 列，按趋势/广度/量能/资金/估值/波动 6 支柱分组。关键原则：衍生必带原始分量（ma_bull_align 带 ma60/120/250；pe_pct_5y 带 pe_ttm_median；amount_pct_1y 带 idx_amount）
+- [x] **维度**：`dimension_type='all'`(全A) + `'index'`（上证50/沪深300/中证500/中证1000/中证2000）
+- [x] **全A 独有列**（仅 `all` 行有值，`index` 行为 NULL）：`north_money`(北向) / `margin_balance`(两融) / `limit_up_count`(涨停家数)
+- [x] 已注册到 `data/panel/__init__.py` PANEL_CALCULATORS
+- [x] **6 支柱完整列清单**（每列标 RAW/DER + 上游来源）：
+  ① 趋势：idx_close / ma60 / ma120 / ma250 / ma_bull_align / idx_ret_3m / idx_ret_6m
+  ② 广度：up_count / down_count / big_up_count(>10%) / big_down_count(<-10%) / profit_ratio / pct_above_ma250 / limit_up_count(仅all)
+  ③ 量能：idx_amount / amount_pct_1y
+  ④ 资金(仅all)：north_money(moneyflow_hsgt) / margin_balance(margin rzrqye) / main_net_inflow_ratio(moneyflow)
+  ⑤ 估值：pe_ttm_median / pb_median / pe_pct_5y / pb_pct_5y / erp(1/PE-10Y国债·待手工表)
+  ⑥ 波动/风险：idx_volatility_60 / avg_correlation / max_drawdown_1y
+- [x] **ERP 国债数据**：`yc_cb`(中债国债收益率)无积分权限 → 需手工维护月度国债收益率小表，或后续发现可免费后接入
+- [x] **limit_list_d 数据始于 2020**，2010-2019 回补该列为空——不是 bug
+- [x] **日期格式对齐**：加工层输出 `trade_date` 统一用 `yyyy-mm-dd`（与接入层 DATE 类型对齐，不在加工层做 YYYYMMDD↔DATE 转换）
+- [ ] **实现 TODO**：get_data/process_data 返回空，待面板数据就绪后回填
+- [ ] **需注册到 schedule_compute.json**
+- [ ] **上游依赖**：index_daily + daily/daily_basic + moneyflow_hsgt/margin/moneyflow/limit_list_d
+- [ ] **下游**：factor_regime_features → factor_regime_score → panel_market_regime（regime 完整链路）
+
+### 0.5c 市场状态(regime)方法论（已讨论定稿，待开工）
+单开条目记录定案决策（见研究笔记 §8.4）：
+- [x] 全局 + 风格二维 regime，全A + 50/300/500/1000/2000 各一行
+- [x] 3 态(牛/震荡/熊) + 滞回 + 最小持续期
+- [x] 先验权重透明打分，不上 HMM
+- [x] 指标设计按私募常用精简原则
 
 ---
 
 ## 阶段 1 · 致命缺口（不补会出假结论）🔴
 
-### 1.0 panel 指数成分表（compute 层开工第一项，ETF 穿透/轮动底座）
-接入层 index_weight 含双版冗余（沪深300/500/1000 各两个代码，早年/近年成分挂在不同代码）。
-接入层忠实全存(ALL_INDEX_CODES)，**下游建一张中间层表做去重 + 时点成分对齐**。前置依赖：index_weight 历史补全（含新增 18 指数）。
-- [ ] 新建 panel 表（建议 `panel_index_member`）：**每月每个 canonical 指数的成分构成**
-- [ ] 去重逻辑：读 index_weight，用 `config.universe.CODE_TO_CANONICAL` 把 alt 代码归一到 canonical，按 `(canonical_code, end_date, con_code)` 去重（早年留 alt 版数据、近年两版相同留任一）
-- [ ] 时点成分(point-in-time)：下游穿透用 `merge_asof(trade_date, direction='backward')` 取 ≤ 当日的最近月度成分快照，不穿越
-- [ ] 对策略层只暴露 canonical 代码（沪深300 永远 000300.SH），双版冗余对下游透明
-- [ ] 同步：universe 配置已抽到 `config/universe.py`（✅ 已完成），panel 直接 import 它
+### 1.0 panel 指数成分表（→ 见阶段 0.5a，schema 已完成）
+schema 已落为 `panel_index_membership_monthly`（每月、每个 canonical 指数的成分构成 + weight）。
+- [x] **schema + 清洗逻辑设计完成**（见 0.5a），接入层回补就绪后实现即可
+- [ ] 实现 get_data/process_data 回填数据
 
 ### 1.1 真实回测引擎
 向量化回测对 ETF 轮动有硬伤，必须建模真实约束，否则收益虚高 2-5 点/年。
@@ -56,6 +118,7 @@
 - [ ] 复权因子断裂、价格跳变、财务异常值自动检测
 - [ ] ETF 折溢价、规模骤变、清盘退市处理规则
 - [ ] ST / 退市 / 新股上市初期的统一过滤口径
+- [ ] **DQC 全集体检**：全部 29 个数据源历史数据补完后，跑一次完整 data quality check（覆盖度/异常值/NULL/复权/跨表一致性），产出一份 DQC 报告
 
 ### 2.2 ETF 数据完整性（受 tushare 天花板限制）
 - [ ] 评估是否需要 ETF 申赎清单(PCF) / IOPV / 跟踪误差（tushare 弱或没有）

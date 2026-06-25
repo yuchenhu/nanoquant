@@ -13,12 +13,14 @@
 表名自动加 panel_ 前缀。
 """
 from data.panel.base import PanelCalculator
+from data.panel.data_quality import DataQualityCalculator
 from data.panel.financial_indicators_snapshot import (
     FinancialIndicatorsSnapshotCalculator,
 )
 from data.panel.financial_statements_snapshot import (
     FinancialStatementsSnapshotCalculator,
 )
+from data.panel.index_membership_monthly import IndexMembershipMonthlyCalculator
 from data.panel.market_sentiment_daily import MarketSentimentDailyCalculator
 from data.panel.market_sentiment_monthly import (
     MarketSentimentMonthlyCalculator,
@@ -36,6 +38,8 @@ __all__ = [
     "MvMonthlyCalculator",
     "FinancialStatementsSnapshotCalculator",
     "FinancialIndicatorsSnapshotCalculator",
+    "IndexMembershipMonthlyCalculator",
+    "DataQualityCalculator",
 ]
 
 # Panel Calculator 注册表（供 pipeline 调度）
@@ -47,4 +51,6 @@ PANEL_CALCULATORS = {
     "mv_monthly": MvMonthlyCalculator,
     "financial_statements_snapshot": FinancialStatementsSnapshotCalculator,
     "financial_indicators_snapshot": FinancialIndicatorsSnapshotCalculator,
+    "index_membership_monthly": IndexMembershipMonthlyCalculator,
+    "data_quality": DataQualityCalculator,
 }

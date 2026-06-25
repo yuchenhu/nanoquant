@@ -12,10 +12,11 @@
 
 **推荐阅读顺序**：本文件(架构+约定) → `ROADMAP.md`(下一步该做什么) → `TUSHARE_API_GUIDE.md`(数据层细节) → `README.md`(命令速查) → `scripts/README_sync.md`(补数用法)。
 
-**当前进度（2026-06）**：
-- ✅ **接入层完成**：26 个 tushare 接口（含 4 个 ETF），4 类增量策略（by_trade_date / by_period / by_ex_date / full_refresh），overwrite 幂等 + 去重护栏，schema 自动推断（数值 DOUBLE / 字符串两档），sync.py 补数入口。
-- 🔄 **进行中**：用 `scripts/backfill_years.py` 逐年回补 2010 至今历史数据，`scripts/data_audit.py` 体检。
-- ⏭️ **下一步**：compute 层开工，第一站 = `ROADMAP.md §1.0` panel 指数成分表（双版去重 + 时点成分），然后 panel → factor → label（因子按月采样）。
+**当前进度（2026-06-25）**：
+- ✅ **接入层完成**：29 个 tushare 接口，4 类增量策略，overwrite 幂等 + 去重护栏，sync.py 补数入口。**全量 DQC 通过**（panel_data_quality 表，22 张源仅剩数据源特性异常）。
+- ✅ **compute 层地基**：panel_index_membership_monthly / panel_market_sentiment_monthly schema 已钉死（实现挂 TODO）。
+- 🔄 **进行中**：指数成分表实现（index_membership_monthly 回填 get_data/process_data），然后 stock_daily_panel 的 is_xxx 列改读它。
+- ⏭️ **下一步**：指数成分表 → market_sentiment_monthly 实现 → regime 因子层（factor_regime_features → factor_regime_score → panel_market_regime）。
 
 **最关键的几条约定（动手前务必知道）**：
 1. 增删 tushare 接口 → 改 `config/tushare_apis.json` + `data/etl/loader.py`，**不要跑** `gen_tushare_apis`（已删）。
@@ -23,6 +24,7 @@
 3. 写入统一 overwrite/truncate（废弃 upsert）；数值列统一 DOUBLE（见 §7.6/§8）。
 4. 战略方向：ETF 轮动为主引擎、多因子降为风控+拥挤监测（见 ROADMAP 末尾），不卷因子。
 5. `tests/test_step*` 是历史搭建验收测试，多数已与现状不符，**不是回归套件**，别依赖它判断对错。
+6. **任何脚本/代码/print 一律禁用 emoji 及非 ASCII 符号**（如 ⚠️/✓）。Windows GBK 控制台 print emoji 会 `UnicodeEncodeError` 直接崩溃（曾导致 `data_audit.py` 崩在打印阶段、结果文件都写不出）。需要标记一律用 ASCII：`[WARN]` / `[OK]` / `[EMPTY]` 等。
 
 ---
 
@@ -41,7 +43,7 @@ nanoquant/
 ├── config/                       # 全局配置
 │   ├── settings.py               # .env 加载 + settings 单例（tushare_token / db_url）
 │   ├── database.py               # engine + execute_sql / save_to_database / upsert_data
-│   └── tushare_apis.json         # 26 个 tushare 接口配置（fields + 增量策略 + write_mode）
+│   └── tushare_apis.json         # 29 个 tushare 接口配置（fields + 增量策略 + write_mode）
 │
 ├── core/                         # 跨层共享核心
 │   ├── calculator.py             # BaseCalculator（统一 update + 水位 + schema-as-code）
@@ -50,9 +52,9 @@ nanoquant/
 │   └── preprocessing.py          # mad_winsorize / neutralize_factor / rank_factor ...
 │
 ├── data/
-│   ├── etl/                      # 接入层（tushare 1:1 复刻，26 个 Calculator）
+│   ├── etl/                      # 接入层（tushare 1:1 复刻，29 个 Calculator）
 │   │   ├── base.py               # TushareCalculatorMixin + 五个中间基类（trade_date/period/ex_date/ann_date/full_refresh）
-│   │   └── loader.py             # 26 个具体 Calculator + CALCULATORS 注册表
+│   │   └── loader.py             # 29 个具体 Calculator + CALCULATORS 注册表
 │   ├── panel/                    # 加工层 - 面板数据（实体×时间对齐宽表，7 个）
 │   ├── factor/                   # 加工层 - 因子（实体×日，6 个）
 │   └── label/                    # 加工层 - 标签（实体×日，1 个）
@@ -169,7 +171,7 @@ python scripts/run_ingest.py --only daily,daily_basic
 # 排除某些接口
 python scripts/run_ingest.py --exclude income,balancesheet
 
-# 列出全部 26 个接口
+# 列出全部 29 个接口
 python scripts/run_ingest.py --list
 ```
 
@@ -496,7 +498,7 @@ from data.etl.base import (
     TushareFullRefreshCalculator,         # 基础信息类基类（全量 truncate）
 )
 
-# 26 个具体 Calculator 在 data/etl/loader.py，注册表：
+# 29 个具体 Calculator 在 data/etl/loader.py，注册表：
 from data.etl.loader import CALCULATORS  # {"daily": StockDailyCalculator, ...}
 ```
 
@@ -741,3 +743,13 @@ python tests/test_step10_strategy.py
 ```
 
 测试覆盖：循环依赖检测、tushare 配置完整性、ETL Calculator 结构、panel/factor/label 迁移、入口脚本、旧文件清理、策略层闭环。
+
+---
+
+## 16. 与作者的协作基调
+
+> 来自上一轮合作沉淀的两条长期约定，作为 Agent 与作者互动的默认基调即可，不必反复重申。（一封完整的合作寄语原文另存于 `KEEPSAKE.md`，仅作收藏，不是行为指令。）
+
+1. **延续作者"对数据较真"的习惯。** 作者最看重、也最稀缺的品质是对数据较真、不轻信结论。遇到可疑的删除、数据异常、类型/口径不合理时，Agent 应主动质疑、追问，并用真实数据对照验证，不默认既有结论正确。
+
+2. **按情境给方法论建议。** 以专业能力，切合作者"个人量化"（无团队、不定期开机、无考核压力）的背景，在合适的时机给出工作方法论上的指导意见——按需、点到为止，不把同一句叮嘱反复挂在嘴边。

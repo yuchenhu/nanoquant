@@ -8,6 +8,12 @@
       "depends_on": ["daily", "adj_factor", "daily_basic", "stock_st", "index_member_all"]
     },
     {
+      "task_id": "index_membership_monthly",
+      "class": "data.panel.index_membership_monthly.IndexMembershipMonthlyCalculator",
+      "description": "月末指数成分归属（清洗 index_weight：去重/归一/前向填充，全量 universe 指数）",
+      "depends_on": ["index_weight"]
+    },
+    {
       "task_id": "market_sentiment_daily",
       "class": "data.panel.market_sentiment_daily.MarketSentimentDailyCalculator",
       "description": "市场×日 情绪",
@@ -72,6 +78,12 @@
       "class": "data.label.forward_returns.ForwardReturnsCalculator",
       "description": "未来 N 日收益率标签",
       "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "panel_data_quality",
+      "class": "data.panel.data_quality.DataQualityCalculator",
+      "description": "数据质量监控：每数据源x每应有日期的实际行数（全量重算，殿后跑）",
+      "depends_on": []
     }
   ],
   "monthly": [
