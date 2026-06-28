@@ -1,4 +1,4 @@
-"""个股×日 行情宽表 Panel（从 data/sql/stock_daily_wide.py 迁移）。
+"""个股×日 行情宽表 Panel（行业 + 指数成分归属 + 换手率/估值/资金流统一底座）。
 
 表名：panel_stock_daily（基类自动加 panel_ 前缀）
 主键：ts_code + trade_date
@@ -6,7 +6,7 @@ biz_date_col：trade_date
 write_mode：upsert（按主键覆盖，幂等）
 
 依赖（schedule_compute.json）：
-- daily / adj_factor / daily_basic / stock_st / index_member_all
+- daily / adj_factor / daily_basic / stock_st / index_member_all / moneyflow / stock_basic / index_weight
 """
 from __future__ import annotations
 
@@ -52,8 +52,8 @@ class StockDailyPanelCalculator(PanelCalculator):
         "list_date": "string", "delist_date": "string", "is_hs": "string",
         "list_days": "int",
         "l1_code": "string", "l1_name": "string", "l2_code": "string", "l2_name": "string",
-        "is_hs300": "int", "is_zz500": "int", "is_zz800": "int",
-        "is_zz1000": "int", "is_zz2000": "int", "is_zzhl": "int", "is_hldb": "int",
+        "is_sz50": "int", "is_hs300": "int", "is_zz500": "int", "is_zz800": "int",
+        "is_zz1000": "int", "is_zz2000": "int", "is_hldb": "int",
     }
 
     def __init__(self, engine=None, index_lookback_window: int = 40):
@@ -216,88 +216,106 @@ class StockDailyPanelCalculator(PanelCalculator):
         return data
 
     def _join_index_member(self, data: pd.DataFrame) -> pd.DataFrame:
-        query = "SELECT l1_code, l1_name, l2_code, l2_name, ts_code, in_date FROM index_member_all"
+        """申万行业分类（merge_asof on in_date + out_date 过滤）。
+
+        个股在 tushare 可能多次变更行业（in_date/out_date 对）。
+        merge_asof backward 取 trade_date 之前最近一次 in_date，
+        但如果该记录的 out_date <= trade_date（已离开该行业），则清空为 None。
+        """
+        query = (
+            "SELECT l1_code, l1_name, l2_code, l2_name, ts_code, in_date, out_date "
+            "FROM index_member_all"
+        )
         im = pd.read_sql(query, self.engine)
         data['trade_date_dt'] = pd.to_datetime(data['trade_date'])
         im['in_date_dt'] = pd.to_datetime(im['in_date'])
-        im_sorted = im.sort_values(['in_date_dt'])
-        data_sorted = data.sort_values(['trade_date_dt'])
+        im['out_date_dt'] = pd.to_datetime(im['out_date'], errors='coerce')
+        im_sorted = im.sort_values(['ts_code', 'in_date_dt'])
+        data_sorted = data.sort_values(['ts_code', 'trade_date_dt'])
         try:
             merged = pd.merge_asof(
                 data_sorted, im_sorted,
                 left_on='trade_date_dt', right_on='in_date_dt',
                 by='ts_code', direction='backward',
             )
+            # 过滤已离开行业：out_date 非空且 <= trade_date → 行业已失效
+            out_mask = merged['out_date_dt'].notna() & (merged['trade_date_dt'] >= merged['out_date_dt'])
+            merged.loc[out_mask, ['l1_code', 'l1_name', 'l2_code', 'l2_name']] = None
             merged = merged[['ts_code', 'trade_date_dt', 'l1_code', 'l1_name', 'l2_code', 'l2_name']]
             data = data.merge(merged, on=['ts_code', 'trade_date_dt'], how='left')
         except Exception as e:
             self.logger.error(f"merge_asof 行业信息失败: {e}")
-        data.drop('trade_date_dt', axis=1, inplace=True, errors='ignore')
         return data
 
     def _join_index_weight(self, data: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+        """指数成分归属（从 panel_index_membership_monthly pivot + 单次 merge_asof）。
+
+        月频成分表已双版归一、月末网格对齐、前向填充，直接 pivot 后 forward-fill 到日。
+        """
         target_indexes = {
-            'is_hs300': '399300.SZ', 'is_zz500': '000905.SH', 'is_zz800': '000906.SH',
+            'is_sz50': '000016.SH',
+            'is_hs300': '000300.SH', 'is_zz500': '000905.SH', 'is_zz800': '000906.SH',
             'is_zz1000': '000852.SH', 'is_zz2000': '932000.CSI',
-            'is_zzhl': '000922.CSI', 'is_hldb': '930955.CSI',
+            'is_hldb': '930955.CSI',
         }
-        for col in target_indexes.keys():
+        all_cols = list(target_indexes.keys())
+        for col in all_cols:
             data[col] = 0
 
         index_codes = list(target_indexes.values())
         codes_str = ",".join([f"'{c}'" for c in index_codes])
-        query = f"SELECT index_code, con_code, trade_date FROM index_weight WHERE index_code IN ({codes_str})"
-
+        query = (
+            f"SELECT trade_date, ts_code, index_code FROM panel_index_membership_monthly "
+            f"WHERE index_code IN ({codes_str})"
+        )
+        # 往前多读 2 个月保证 merge_asof 能取到区间首日之前的最近月末快照
         if start_date:
             sd = start_date.replace('-', '')
             sd_dt = datetime.strptime(sd, '%Y%m%d')
-            index_start = (sd_dt - timedelta(days=self.index_lookback_window)).strftime('%Y%m%d')
-            query += f" AND trade_date >= '{index_start}'"
+            read_start = (sd_dt - timedelta(days=70)).strftime('%Y-%m-%d')
+            query += f" AND trade_date >= '{read_start}'"
         if end_date:
             ed = end_date.replace('-', '') if isinstance(end_date, str) else end_date
-            query += f" AND trade_date <= '{ed}'"
-        query += " ORDER BY index_code, trade_date, con_code"
+            ed_dt = datetime.strptime(ed, '%Y%m%d').strftime('%Y-%m-%d')
+            query += f" AND trade_date <= '{ed_dt}'"
 
-        iw = pd.read_sql(query, self.engine)
-        if iw.empty:
+        mem = pd.read_sql(query, self.engine)
+        if mem.empty:
             return data
 
-        data['trade_date_dt'] = pd.to_datetime(data['trade_date'])
-        iw['trade_date_dt'] = pd.to_datetime(iw['trade_date'])
+        mem['trade_date_dt'] = pd.to_datetime(mem['trade_date'])
+        mem['_present'] = 1
 
-        for target_col, index_code in target_indexes.items():
-            idx_data = iw[iw['index_code'] == index_code].copy()
-            if idx_data.empty:
-                continue
-            adj_dates = sorted(idx_data['trade_date_dt'].unique())
-            all_stocks = data['ts_code'].unique()
-            stocks_df = pd.DataFrame({'ts_code': all_stocks})
-            stocks_df['key'] = 1
-            dates_df = pd.DataFrame({'adjustment_date': adj_dates})
-            dates_df['key'] = 1
-            cart = stocks_df.merge(dates_df, on='key').drop('key', axis=1)
-            idx_renamed = idx_data[['con_code', 'trade_date_dt']].rename(
-                columns={'con_code': 'ts_code', 'trade_date_dt': 'adjustment_date'}
-            )
-            idx_renamed['is_component'] = 1
-            temp = cart.merge(idx_renamed, on=['ts_code', 'adjustment_date'], how='left')
-            temp['is_component'] = temp['is_component'].fillna(0)
-            data_sorted = data.sort_values(['trade_date_dt']).copy()
-            temp_sorted = temp.sort_values(['adjustment_date']).copy()
-            try:
-                merged = pd.merge_asof(
-                    data_sorted, temp_sorted,
-                    left_on='trade_date_dt', right_on='adjustment_date',
-                    by='ts_code', direction='backward',
-                )
-                data = data.merge(
-                    merged[['ts_code', 'trade_date_dt', 'is_component']],
-                    on=['ts_code', 'trade_date_dt'], how='left',
-                )
-                data[target_col] = data['is_component'].fillna(0).astype(int)
-                data.drop('is_component', axis=1, inplace=True)
-            except Exception as e:
-                self.logger.error(f"merge_asof 指数 {index_code} 失败: {e}")
+        # pivot: (ts_code, trade_date_dt) × canonical_index → is_member flag
+        membership = mem.pivot_table(
+            index=['ts_code', 'trade_date_dt'],
+            columns='index_code',
+            values='_present',
+            fill_value=0,
+        ).reset_index()
+        membership.rename(columns={v: k for k, v in target_indexes.items()}, inplace=True)
+        for c in all_cols:
+            if c not in membership.columns:
+                membership[c] = 0
+
+        # 单次 merge_asof: 往前找最近一个月末快照，forward-fill 到日
+        if 'trade_date_dt' not in data.columns:
+            data['trade_date_dt'] = pd.to_datetime(data['trade_date'])
+
+        merged = pd.merge_asof(
+            data[['ts_code', 'trade_date_dt']].sort_values(['ts_code', 'trade_date_dt']),
+            membership.sort_values(['ts_code', 'trade_date_dt']),
+            on='trade_date_dt',
+            by='ts_code',
+            direction='backward',
+        )
+        for c in all_cols:
+            if c in merged.columns:
+                data = data.drop(c, axis=1, errors='ignore')
+        data = data.merge(merged[['ts_code', 'trade_date_dt'] + all_cols],
+                          on=['ts_code', 'trade_date_dt'], how='left')
+        for c in all_cols:
+            data[c] = data[c].fillna(0).astype(int)
 
         data.drop('trade_date_dt', axis=1, inplace=True, errors='ignore')
         return data

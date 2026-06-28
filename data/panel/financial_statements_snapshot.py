@@ -32,7 +32,6 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
     primary_keys = ["snapshot_date", "ts_code", "end_date"]
     biz_date_col = "snapshot_date"
     write_mode = "upsert"
-    # output_schema 留空，由 df 推断（列太多，且动态生成）
 
     def __init__(self, engine=None, lookback_years: int = 4):
         super().__init__(engine=engine)
@@ -85,6 +84,45 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
             'ebitda', 'net_profit', 'finan_exp', 'depr_fa_coga_dpba', 'amort_intang_assets', 'lt_amort_deferred_exp',
             'decr_inventories', 'decr_oper_payable', 'incr_oper_payable',
         ]
+
+        # 派生列（_process_columns 产出，全为数值）
+        self.derived_columns = [
+            'cash_assets', 'quick_receivables', 'quick_assets', 'ppe',
+            'immaterial_assets', 'soft_assets',
+            'total_intangible_assets', 'total_tangible_assets',
+            'cur_operating_assets', 'lt_operating_assets', 'total_operating_assets', 'non_operating_assets',
+            'quick_payables', 'cur_operating_liab', 'non_operating_liab',
+            'st_interest_bearing_liab', 'lt_interest_bearing_liab', 'interest_bearing_liab',
+            'net_operating_assets', 'working_capital', 'invested_capital', 'retained_earnings',
+            'gp', 'oper_exp', 'oper_cost_exp', 'non_recurring_items', 'core_pretax_profit',
+            'da', 'working_capital_chg', 'net_capex', 'fcf',
+            'ev', 'evnoa',
+        ]
+
+        # 构建 output_schema（显式，避免 NULL 首行导致推断错误）
+        self.output_schema = {}
+        # 主键 / 日期 / 标记
+        self.output_schema.update({
+            "snapshot_date": "string", "ts_code": "string",
+            "ann_date": "string", "end_date": "string", "pre_date": "string",
+            "actual_date": "string", "modify_date": "string",
+            "report_type": "int",
+            "has_bs": "int", "has_inc": "int", "has_cf": "int", "has_div": "int",
+            "bs_f_ann_date": "string", "inc_f_ann_date": "string", "cf_f_ann_date": "string",
+            "ex_date": "string",
+        })
+        # MV / 分红
+        self.output_schema.update({
+            "total_share": "float", "float_share": "float", "total_mv": "float", "circ_mv": "float",
+            "ev": "float", "evnoa": "float",
+            "cash_div": "float", "base_share": "float", "total_div": "float",
+        })
+        # 三表内容列（全数值）
+        for c in self.bs_content_columns + self.inc_content_columns + self.cf_content_columns:
+            self.output_schema[c] = "float"
+        # 派生列
+        for c in self.derived_columns:
+            self.output_schema[c] = "float"
 
     # ===== 重写 update：get_data 返回 dict，process_data 接受 dict =====
     def update(

@@ -26,13 +26,7 @@ class FinancialIndicatorsSnapshotCalculator(PanelCalculator):
     primary_keys = ["snapshot_date", "ts_code", "end_date"]
     biz_date_col = "snapshot_date"  # 财务快照日期
     write_mode = "upsert"
-    output_schema = {
-        "snapshot_date": "string", "ts_code": "string", "end_date": "string",
-        "ann_date": "string", "pre_date": "string", "actual_date": "string",
-        "modify_date": "string", "report_type": "int",
-        "total_mv": "float",
-        # 派生列通过 _select_and_clean_columns 动态生成，类型统一为 float
-    }
+    # output_schema 在 _init_column_lists 中显式构建，避免 NULL 首行推断错误
 
     def __init__(self, engine=None):
         super().__init__(engine=engine)
@@ -141,6 +135,25 @@ class FinancialIndicatorsSnapshotCalculator(PanelCalculator):
             ('equity_tvr_ttm', 'revenue_ttm', 'total_hldr_eqy_exc_min_int_ttm_avg'),
         ]
         self.multiples = self.valuation_cols + self.profit_cols + self.quality_cols
+
+        # 构建 output_schema（显式，与 _select_and_clean_columns 的列清单一致）
+        self.output_schema = {
+            "snapshot_date": "string", "ts_code": "string", "end_date": "string",
+            "ann_date": "string", "pre_date": "string", "actual_date": "string",
+            "modify_date": "string", "report_type": "int",
+            "total_mv": "float",
+        }
+        for col in self.q_cols:
+            self.output_schema[f'{col}_q'] = "float"
+            self.output_schema[f'{col}_ttm'] = "float"
+        for col in self.ttm_avg_cols:
+            self.output_schema[col] = "float"
+        for output, X, Y in self.multiples:
+            self.output_schema[output] = "float"
+        for col in self.q_cols + self.ttm_avg_cols:
+            self.output_schema[f'{col}_yoy'] = "float"
+        for output, X, Y in self.profit_cols + self.quality_cols:
+            self.output_schema[f'{output}_yoy'] = "float"
 
     def get_data(
         self, start_date: Optional[str] = None, end_date: Optional[str] = None, **params: Any

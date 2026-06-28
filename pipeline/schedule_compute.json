@@ -26,18 +26,6 @@
       "depends_on": ["stock_daily_panel"]
     },
     {
-      "task_id": "fin_statement_panel",
-      "class": "data.panel.financial_statements_snapshot.FinancialStatementsSnapshotCalculator",
-      "description": "个股×报告期 财务三表合并",
-      "depends_on": ["income", "balancesheet", "cashflow"]
-    },
-    {
-      "task_id": "fin_indicator_snapshot",
-      "class": "data.panel.financial_indicators_snapshot.FinancialIndicatorsSnapshotCalculator",
-      "description": "个股×快照日 财务指标",
-      "depends_on": ["fin_statement_panel"]
-    },
-    {
       "task_id": "factor_price_volume_20d",
       "class": "data.factor.price_volume_20d.PriceVolume20DCalculator",
       "description": "价量动量因子（20日）",
@@ -68,12 +56,6 @@
       "depends_on": ["stock_daily_panel"]
     },
     {
-      "task_id": "factor_valuation",
-      "class": "data.factor.valuation.ValuationCalculator",
-      "description": "估值因子",
-      "depends_on": ["stock_daily_panel", "fin_indicator_snapshot"]
-    },
-    {
       "task_id": "label_forward_returns",
       "class": "data.label.forward_returns.ForwardReturnsCalculator",
       "description": "未来 N 日收益率标签",
@@ -87,6 +69,24 @@
     }
   ],
   "monthly": [
+    {
+      "task_id": "fin_statement_panel",
+      "class": "data.panel.financial_statements_snapshot.FinancialStatementsSnapshotCalculator",
+      "description": "个股×月 财务三表快照（snapshot_date=月末，PIT不穿越）",
+      "depends_on": ["income", "balancesheet", "cashflow"]
+    },
+    {
+      "task_id": "fin_indicator_snapshot",
+      "class": "data.panel.financial_indicators_snapshot.FinancialIndicatorsSnapshotCalculator",
+      "description": "个股×月 财务指标快照（从三表派生比值/利润率/质量指标）",
+      "depends_on": ["fin_statement_panel"]
+    },
+    {
+      "task_id": "factor_valuation",
+      "class": "data.factor.valuation.ValuationCalculator",
+      "description": "估值因子（snapshot_date=月末，PIT 12 期全量叉乘）",
+      "depends_on": ["fin_indicator_snapshot"]
+    },
     {
       "task_id": "market_sentiment_monthly",
       "class": "data.panel.market_sentiment_monthly.MarketSentimentMonthlyCalculator",
