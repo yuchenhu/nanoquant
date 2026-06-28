@@ -4,6 +4,26 @@
 > 本文档记录从「有数据」到「能跑出可信结论 / 能实盘」还缺的部分，按优先级分阶段。
 > 客观评估，逐项勾选。
 
+### 2026-06-28 进度：DQC 审计 + 频率超限修复 + 缺失表补齐
+
+- [x] **接入层全量 DQC 审计**（sync.log 18 万行解析）：7 类问题覆盖 14/17 个回补年份
+- [x] **频率超限修复**：`by_trade_date.py` 改为每次请求后 sleep 0.3s（原每 10 次 sleep 0.5s），`BY_TRADE_DATE_SLEEP` 环境变量可调；日常增量不撞限
+- [x] **`backfill_years.py` 加 `--only`**：可指定接口名补数（如 `--only dividend,suspend_d`）；加 `--skip-refresh` 跳过清单全量刷新
+- [x] **`schedule_ingest.json` 加入三新表**：moneyflow_hsgt / margin / limit_list_d（已在 loader.py 注册，只缺调度入口）
+- [x] 三新表 CREATE TABLE 已交付，待用户手动建表
+
+---
+
+### 2026-06-28 进度：中间 Panel 表 + 估值因子管线重构
+- [x] **panel_stock_daily 重构**：`_join_index_weight` 改读 `panel_index_membership_monthly`；新增 `is_sz50`，删 `is_zzhl`；`_join_index_member` 加 `out_date` 过滤
+- [x] **panel_stock_percentiles 重构**：窄列 SELECT + `rolling.rank()` + `above_ma` + 3y/5y 分位
+- [x] **financial_statements_snapshot / indicators**：显式 output_schema（避免 NULL 首行推断错误）
+- [x] **factor_valuation 重写**：从 indicators 取 18 个比值，36 月 PIT 窗口，全量叉乘 5-6 种衍生（mean/std/zscore/tsrank/momentum/neg_cnt）≈ 90 列
+- [x] **schedule_compute.json**：fin_statement / indicator / valuation 迁至 monthly 节
+- [ ] Next: 数据回补 → run_compute 验证 → IC 分析筛因子 → 补其他基本面因子（profitability/growth/safety）
+
+---
+
 ---
 
 ## 阶段 0 · 当前已完成 ✅
@@ -29,7 +49,7 @@
 
 **⚠️ 加工层日期格式统一规则**：接入层 `trade_date` 存的是 MySQL DATE 类型（`yyyy-mm-dd`），加工层所有新表的 `trade_date` / `biz_date_col` 输出统一用 **`yyyy-mm-dd` 字符串**，不用 `YYYYMMDD`。`BaseCalculator.update()` 传进来的 `start_date/end_date` 是 `YYYYMMDD` 格式，加工层内部 `pd.to_datetime` 统一处理，落库 `convert_date_columns` 自动转 DATE。**不在加工层做格式互转**。
 
-### 0.5a panel_index_membership_monthly（指数成分归属 · 清洗 index_weight）
+### 0.5a panel_index_membership_monthly（指数成分归属 · 清洗 index_weight）✅ 已完成
 接入层 `index_weight` 有三处"脏"（已用 MCP + 本地库交叉验证）：
 1. 双版镜像（沪深300有 000300.SH/399300.SZ，成分逐行完全一致）→ 必须归一
 2. "月度"名不副实（沪深300一年 22~26 个 trade_date，其他 12 个）→ 必须月内去重
@@ -48,47 +68,52 @@
 - [x] **日期格式注意**：index_weight.trade_date 库里是 `yyyy-mm-dd`，用 `pd.to_datetime` 处理（不用字符串比较）
 - [x] **月级唯一保证（2026-06-25）**：`write_mode=overwrite + partition_col=trade_date`，`save_to_database` 落库前 `DELETE WHERE DATE_FORMAT(trade_date, '%Y-%m') IN (输出月份)`。7 月重算时旧月末快照被清掉，每月每个指数就一个 trade_date。
 - [x] **已注册 schedule_compute.json + 全历史回补完成**（15 指数，2010-01 ~ 今）
-- [ ] **下游消费**：market_sentiment_monthly 的成分分布列、stock_daily_panel 的 is_xxx 重构改读此表
+- [x] **下游消费**：market_sentiment_monthly 已读此表取月末成分（见 0.5b），stock_daily_panel 的 is_xxx 重构待后续
 
-### 0.5b panel_market_sentiment_monthly（市场情绪底表 · regime 输入）
-从旧三维护(cap/index/industry)重建为 **index 5 指数 + all 全A** 两维，6 支柱 32 指标。
-旧文件已覆盖重写（`data/panel/market_sentiment_monthly.py`）。
+### 0.5b panel_market_sentiment_monthly（市场情绪底表 · regime 输入）✅ 已实现
+旧六支柱 32 列已废弃（概念重叠 + erp 永 NULL）。2026-06-28 全量重构为**私募业界五维度 36 列**：
+价(12)、量(6)、波(6)、估值(6)、资金(7)。每个维度「指数自身 + 成分分布」双视角。
 
-已钉死：
-- [x] **schema**：32 列，按趋势/广度/量能/资金/估值/波动 6 支柱分组。关键原则：衍生必带原始分量（ma_bull_align 带 ma60/120/250；pe_pct_5y 带 pe_ttm_median；amount_pct_1y 带 idx_amount）
-- [x] **维度**：`dimension_type='all'`(全A) + `'index'`（上证50/沪深300/中证500/中证1000/中证2000）
-- [x] **全A 独有列**（仅 `all` 行有值，`index` 行为 NULL）：`north_money`(北向) / `margin_balance`(两融) / `limit_up_count`(涨停家数)
-- [x] 已注册到 `data/panel/__init__.py` PANEL_CALCULATORS
-- [x] **6 支柱完整列清单**（每列标 RAW/DER + 上游来源）：
-  ① 趋势：idx_close / ma60 / ma120 / ma250 / ma_bull_align / idx_ret_3m / idx_ret_6m
-  ② 广度：up_count / down_count / big_up_count(>10%) / big_down_count(<-10%) / profit_ratio / pct_above_ma250 / limit_up_count(仅all)
-  ③ 量能：idx_amount / amount_pct_1y
-  ④ 资金(仅all)：north_money(moneyflow_hsgt) / margin_balance(margin rzrqye) / main_net_inflow_ratio(moneyflow)
-  ⑤ 估值：pe_ttm_median / pb_median / pe_pct_5y / pb_pct_5y / erp(1/PE-10Y国债·待手工表)
-  ⑥ 波动/风险：idx_volatility_60 / avg_correlation / max_drawdown_1y
-- [x] **ERP 国债数据**：`yc_cb`(中债国债收益率)无积分权限 → 需手工维护月度国债收益率小表，或后续发现可免费后接入
-- [x] **limit_list_d 数据始于 2020**，2010-2019 回补该列为空——不是 bug
-- [x] **日期格式对齐**：加工层输出 `trade_date` 统一用 `yyyy-mm-dd`（与接入层 DATE 类型对齐，不在加工层做 YYYYMMDD↔DATE 转换）
-- [ ] **实现 TODO**：get_data/process_data 返回空，待面板数据就绪后回填
-- [ ] **需注册到 schedule_compute.json**
-- [ ] **上游依赖**：index_daily + daily/daily_basic + moneyflow_hsgt/margin/moneyflow/limit_list_d
-- [ ] **下游**：factor_regime_features → factor_regime_score → panel_market_regime（regime 完整链路）
+已钉死 + 已实现：
+- [x] **schema**：五维度 36 列（全部已注释物理意义 + 公式来源）。
+  **价(12)**：idx_close, ma60/120/250, idx_ret_1m/3m/12m, profit_ratio, up_down_ratio, pct_above_ma60, pct_above_ma250, limit_up_count。
+  **量(6)**：idx_amount, turnover_rate_median, amount_pct_3m, amount_pct_1y, amount_gini（Gini系数替代旧 amount_concentration；删 stock_count/valid_count）。
+  **波(6)**：idx_volatility_20/60, max_drawdown_1y, avg_correlation（CBOE KCJ同源公式）, cross_sectional_vol, downside_vol_ratio（指数日收益 std(跌)/std(涨)）。
+  **估值(6)**：pe_ttm_median, pb_median, pe_pct_5y, pb_pct_5y, pe_dispersion（PE 75/25分位比/定价分歧度）, pb_pe_divergence（PE分位-PB分位/盈利周期位置）。
+  **资金(7)**：全A独有 north_money/margin_balance；各维度 net_inflow_ratio（净主动买/总主动成交）, inflow_direction_pct（日净>0占比/持续性）, inflow_stability（mean/std/平稳度）, inflow_breadth（净流入>0股票占比/资金广度）, institutional_pct（大单占比/机构代理）。
+  详见 [data/panel/market_sentiment_monthly.py](file:///c:/Users/hyc/Desktop/nanoquant/data/panel/market_sentiment_monthly.py) output_schema + 实现。
+- [x] **所有指标列已注释物理意义**（回答什么具体问题 + 公式来源），该原则已写入 CLAUDE.md §10.1 及 §0 关键约定。
+- [x] **维度**：`dimension_type='all'` + `'index'`（50/300/500/1000/2000）
+- [x] **get_data / process_data 已实现**：上游 8 表一次取数 + 预计算个股 MA60/250 + 按月×维度循环
+- [x] 关键专业设计：`turnover_rate_median` 换手率归一化（量维度核心）、
+  `pct_above_ma60 vs ma250` 真假牛判据（均来自私募业界 regime detection 标准做法）
+- [x] 全A 独有列（仅 all 行有值，index 行为 NULL）：north_money / margin_balance / limit_up_count
+- [x] 空缺项：`limit_up_count` 2010-2019 为 0/空（limit_list_d 始于 2020）
+- [ ] **待验证**：表已建、schema 已钉死、代码编译通过，需补数验证（run_compute 全量回补 → 检查覆盖度/分布）
+- [ ] **需注册到 schedule_compute.json**（未注册，当前 0.5b 在 0.5a 之前跑会缺上游 member 数据）
+- [ ] **下游（定稿待开工）**：factor_regime_features → factor_regime_score → panel_market_regime
 
-### 0.5c 市场状态(regime)方法论（已讨论定稿，待开工）
+### 0.5c 市场状态(regime)方法论（已讨论定稿，底表已落代码，打分待开工）
 单开条目记录定案决策（见研究笔记 §8.4）：
 - [x] 全局 + 风格二维 regime，全A + 50/300/500/1000/2000 各一行
 - [x] 3 态(牛/震荡/熊) + 滞回 + 最小持续期
 - [x] 先验权重透明打分，不上 HMM
-- [x] 指标设计按私募常用精简原则
+- [x] 指标设计按私募常用精简原则 — 已实现为五维度 36 列（见 0.5b）
+- [ ] **待开工**：综合维度打分 logic（价/量/波/估值/资金 → 统一 regime score）→ panel_market_regime
+
+### 0.5d 中间 Panel 表（panel_stock_daily / percentiles 重构）🔄 2026-06-28
+为市场状态表及其他下游提供干净底座，已完成重构：
+- [x] **panel_stock_daily 重构**：`_join_index_weight` 改读 `panel_index_membership_monthly`（不再直接读 `index_weight`）；新增 `is_sz50`（上证50），删 `is_zzhl`（中证红利）；`_join_index_member` 增加 `out_date` 过滤修复历史行业误配。
+- [x] **panel_stock_percentiles 重构**：窄列 SELECT（8 列代替 60+ 列，IO -85%）；`rolling.rank()` 替代 `percentileofscore`（C 原生 vs Python lambda）；新增 `above_ma20/60/250`（0/1 标记）+ `price/pe/pe_ttm/pb_tsrank_3y/5y`（3y/5y 时序分位）。
+- [ ] **TODO: 量价类降频优化**：量价指标（close/turnover/volatility）只需 1y 日频，PE/PB 类需 5y 但可降月频（读 `panel_financial_indicators_snapshot`）。此举可将 extended 读取窗口从 1450 日砍到 ~60 月 + 350 日，增量 IO 再降 60%+。等 `financial_indicators_snapshot` 全量回补后实施。
+- [ ] **TODO: 调度层控制财务快照按月末频率**：`financial_statements_snapshot` / `indicators` / 下游 valuation 因子按 snapshot_date = monthend 批量回补。不做日历天盲跑。由 run_compute.py 外部循环或 schedule_compute.json 的频率控制实现。
 
 ---
 
 ## 阶段 1 · 致命缺口（不补会出假结论）🔴
 
-### 1.0 panel 指数成分表（→ 见阶段 0.5a，schema 已完成）
-schema 已落为 `panel_index_membership_monthly`（每月、每个 canonical 指数的成分构成 + weight）。
-- [x] **schema + 清洗逻辑设计完成**（见 0.5a），接入层回补就绪后实现即可
-- [ ] 实现 get_data/process_data 回填数据
+### 1.0 panel 指数成分表（→ 见阶段 0.5a，已完成）
+- [x] **schema + 清洗逻辑 + get_data/process_data 全部实现**，全历史回补完成（2010-01 ~ 今）
 
 ### 1.1 真实回测引擎
 向量化回测对 ETF 轮动有硬伤，必须建模真实约束，否则收益虚高 2-5 点/年。

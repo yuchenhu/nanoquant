@@ -102,7 +102,7 @@ def refresh_lists() -> None:
         time.sleep(INTER_SLEEP)
 
 
-def backfill_one_year(year: int, today: str) -> bool:
+def backfill_one_year(year: int, today: str, only_set: set | None = None) -> bool:
     """回补某一年的行情/财务/分红（exclude 清单类）。返回是否全成功。"""
     from data.etl.loader import CALCULATORS
     from scripts.sync import classify, run_one
@@ -118,6 +118,12 @@ def backfill_one_year(year: int, today: str) -> bool:
         for name, cls in CALCULATORS.items()
         if name not in REFRESH_KEYS and classify(cls) in order
     ]
+    if only_set:
+        targets = [(n, c) for n, c in targets if n in only_set]
+        if not targets:
+            logger.warning(f"  --only 指定的接口均不在 CALCULATORS 中: {only_set}")
+            return True
+        logger.info(f"  --only 过滤后 {len(targets)} 个接口: {[n for n,_ in targets]}")
     targets.sort(key=lambda x: order[classify(x[1])])
 
     all_ok = True
@@ -136,11 +142,16 @@ def main() -> int:
     parser.add_argument("--from-year", type=int, default=2012, help="起始年（默认2012）")
     parser.add_argument("--to-year", type=int, default=None, help="结束年（默认今年）")
     parser.add_argument("--reset", action="store_true", help="重置进度，全部重补")
+    parser.add_argument("--only", type=str, default=None,
+                        help="只跑指定接口（逗号分隔，如 dividend,suspend_d）")
+    parser.add_argument("--skip-refresh", action="store_true",
+                        help="跳过清单类全量刷新（只补指定接口时用）")
     args = parser.parse_args()
 
     today = get_today_str()
     to_year = args.to_year or int(today[:4])
     from_year = args.from_year
+    only_set = set(args.only.split(",")) if args.only else None
 
     if args.reset and PROGRESS_FILE.exists():
         PROGRESS_FILE.unlink()
@@ -155,14 +166,17 @@ def main() -> int:
     logger.info(f"待补年份: {years}")
     logger.info("=" * 72)
 
-    # Step 1: 清单类全量刷一次
-    refresh_lists()
+    # Step 1: 清单类全量刷一次（除非 --skip-refresh）
+    if args.skip_refresh:
+        logger.info("=== 跳过清单类刷新（--skip-refresh）===")
+    else:
+        refresh_lists()
 
     # Step 2: 逐年回补
     t_all = time.time()
     for year in years:
         t0 = time.time()
-        ok = backfill_one_year(year, today)
+        ok = backfill_one_year(year, today, only_set)
         el = (time.time() - t0) / 60
         if ok:
             mark_done(year)

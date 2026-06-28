@@ -140,6 +140,24 @@
       "class": "data.etl.loader.FundShareCalculator",
       "description": "基金规模（每日份额）",
       "depends_on": ["fund_basic"]
+    },
+    {
+      "task_id": "moneyflow_hsgt",
+      "class": "data.etl.loader.MoneyflowHsgtCalculator",
+      "description": "沪深港通资金流向（北向/南向）",
+      "depends_on": ["trade_cal"]
+    },
+    {
+      "task_id": "margin",
+      "class": "data.etl.loader.MarginCalculator",
+      "description": "融资融券交易汇总",
+      "depends_on": ["trade_cal"]
+    },
+    {
+      "task_id": "limit_list_d",
+      "class": "data.etl.loader.LimitListDCalculator",
+      "description": "每日涨跌停/炸板",
+      "depends_on": ["trade_cal"]
     }
   ],
   "weekly": [

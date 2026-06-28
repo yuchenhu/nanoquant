@@ -54,9 +54,12 @@ class ByTradeDateCalculator(BaseIncremental):
             if df is None or len(df) == 0:
                 continue
             results.append(df)
-            # 每 10 个交易日 sleep 一下，避免 tushare 限频
-            if (i + 1) % 10 == 0:
-                time.sleep(0.5)
+            # 每次请求后 sleep，避免 tushare 限频（500 次/分钟=每请求 0.12s 即撞限）
+            # 0.3s/请求 → ~200 次/分钟，在 500 上限内，个人单兵够用
+            # 如果未来做全量回补，可在 .env 设 BY_TRADE_DATE_SLEEP 调大
+            import os
+            sleep_s = float(os.getenv("BY_TRADE_DATE_SLEEP", "0.3"))
+            time.sleep(sleep_s)
 
         if not results:
             return pd.DataFrame()
