@@ -31,3 +31,7 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# ===== 临时文件 / EDA =====
+_*.txt
+_*.py
