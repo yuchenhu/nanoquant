@@ -4,6 +4,17 @@
 > 本文档记录从「有数据」到「能跑出可信结论 / 能实盘」还缺的部分，按优先级分阶段。
 > 客观评估，逐项勾选。
 
+### 2026-07-02 进度：market_sentiment_monthly 重构 + EDA 验证 + regime 方法论定案
+
+- [x] **market_sentiment_monthly 重构**：删 ma120、加 dv_ttm_median、idx_ret 改日历月对齐、PE 5y 分位改月末抽样（IO ↓~20×）、amount_pct 改月vs月对比
+- [x] **schedule_compute.json 注册**：depends_on 改为实际上游（stock_daily_panel, index_daily, moneyflow_hsgt, margin, limit_list_d）
+- [x] **逐月回补脚本**：`scripts/backfill_market_sentiment.py`（--start/--end/--resume 断点续跑）
+- [x] **2024 全年 12 个月 EDA 验证**：手算交叉验证通过；发现并修复 4 个 bug
+- [x] **CLAUDE.md 原则 2 强化**：零固定阈值、等权优先加权需举证、验证靠下游有用性（4 条硬约束）
+- [x] **regime 方法论定案**：滚动百分位 + 等权投票 + 最小滞回，待实现 `panel_market_regime`
+- [ ] Next: 全量回补 2010-2026 → `panel_market_regime` 实现
+
+---
 ### 2026-06-28 进度：DQC 审计 + 频率超限修复 + 缺失表补齐
 
 - [x] **接入层全量 DQC 审计**（sync.log 18 万行解析）：7 类问题覆盖 14/17 个回补年份
@@ -70,36 +81,38 @@
 - [x] **已注册 schedule_compute.json + 全历史回补完成**（15 指数，2010-01 ~ 今）
 - [x] **下游消费**：market_sentiment_monthly 已读此表取月末成分（见 0.5b），stock_daily_panel 的 is_xxx 重构待后续
 
-### 0.5b panel_market_sentiment_monthly（市场情绪底表 · regime 输入）✅ 已实现
-旧六支柱 32 列已废弃（概念重叠 + erp 永 NULL）。2026-06-28 全量重构为**私募业界五维度 36 列**：
-价(12)、量(6)、波(6)、估值(6)、资金(7)。每个维度「指数自身 + 成分分布」双视角。
+### 0.5b panel_market_sentiment_monthly（市场情绪底表 · regime 输入）✅ 已实现 + 已验证
+
+> **2026-07-02 更新**：旧版 36 列已废弃。全量重构为 36 列（价11/量6/波6/估值7/资金7），12 个月 EDA 验证通过，待全量回补。
 
 已钉死 + 已实现：
 - [x] **schema**：五维度 36 列（全部已注释物理意义 + 公式来源）。
-  **价(12)**：idx_close, ma60/120/250, idx_ret_1m/3m/12m, profit_ratio, up_down_ratio, pct_above_ma60, pct_above_ma250, limit_up_count。
-  **量(6)**：idx_amount, turnover_rate_median, amount_pct_3m, amount_pct_1y, amount_gini（Gini系数替代旧 amount_concentration；删 stock_count/valid_count）。
-  **波(6)**：idx_volatility_20/60, max_drawdown_1y, avg_correlation（CBOE KCJ同源公式）, cross_sectional_vol, downside_vol_ratio（指数日收益 std(跌)/std(涨)）。
-  **估值(6)**：pe_ttm_median, pb_median, pe_pct_5y, pb_pct_5y, pe_dispersion（PE 75/25分位比/定价分歧度）, pb_pe_divergence（PE分位-PB分位/盈利周期位置）。
-  **资金(7)**：全A独有 north_money/margin_balance；各维度 net_inflow_ratio（净主动买/总主动成交）, inflow_direction_pct（日净>0占比/持续性）, inflow_stability（mean/std/平稳度）, inflow_breadth（净流入>0股票占比/资金广度）, institutional_pct（大单占比/机构代理）。
-  详见 [data/panel/market_sentiment_monthly.py](file:///c:/Users/hyc/Desktop/nanoquant/data/panel/market_sentiment_monthly.py) output_schema + 实现。
-- [x] **所有指标列已注释物理意义**（回答什么具体问题 + 公式来源），该原则已写入 CLAUDE.md §10.1 及 §0 关键约定。
+  **价(11)**：idx_close, ma60/250（删 ma120）, idx_ret_1m/3m/12m（**日历月对齐**，非固定交易日数）, profit_ratio, up_down_ratio, pct_above_ma60, pct_above_ma250, limit_up_count。
+  **量(6)**：idx_amount, turnover_rate_median, amount_pct_3m, amount_pct_1y（**月总额 vs 月总额**，非月vs日）, amount_gini。
+  **波(6)**：idx_volatility_20/60, max_drawdown_1y, avg_correlation（CBOE KCJ同源公式）, cross_sectional_vol, downside_vol_ratio。
+  **估值(7)**：pe_ttm_median, pb_median, **dv_ttm_median（股息率，价值风格估值锚）**, pe_pct_5y, pb_pct_5y（**月末抽样 60 点替代逐日 1250 点，IO ↓~20×**）, pe_dispersion, pb_pe_divergence。
+  **资金(7)**：全A独有 north_money/margin_balance；各维度 net_inflow_ratio, inflow_direction_pct, inflow_stability, inflow_breadth, institutional_pct。
 - [x] **维度**：`dimension_type='all'` + `'index'`（50/300/500/1000/2000）
-- [x] **get_data / process_data 已实现**：上游 8 表一次取数 + 预计算个股 MA60/250 + 按月×维度循环
-- [x] 关键专业设计：`turnover_rate_median` 换手率归一化（量维度核心）、
-  `pct_above_ma60 vs ma250` 真假牛判据（均来自私募业界 regime detection 标准做法）
-- [x] 全A 独有列（仅 all 行有值，index 行为 NULL）：north_money / margin_balance / limit_up_count
-- [x] 空缺项：`limit_up_count` 2010-2019 为 0/空（limit_list_d 始于 2020）
-- [ ] **待验证**：表已建、schema 已钉死、代码编译通过，需补数验证（run_compute 全量回补 → 检查覆盖度/分布）
-- [ ] **需注册到 schedule_compute.json**（未注册，当前 0.5b 在 0.5a 之前跑会缺上游 member 数据）
-- [ ] **下游（定稿待开工）**：factor_regime_features → factor_regime_score → panel_market_regime
+- [x] **get_data / process_data 已实现**：2 路取数（日线前溯1年 + 月末抽样前溯5年）、MA60/250 预计算、日历月末收盘 lookup
+- [x] **已注册 schedule_compute.json**（monthly 节，depends_on: stock_daily_panel, index_daily, moneyflow_hsgt, margin, limit_list_d）
+- [x] **2024 全年 12 个月 EDA 验证通过**：手算交叉验证 idx_close/ma/ret/pe/pb/dv/north_money 全部对齐；idx_ret 与 close 环比相关性 1.0；全A 独有列 null 隔离正确
+- [x] **3 个单月回补 bug 已修复**：① ret 回看用 all_month_ends（非仅计算期）② amount_pct 月vs月对比（非月vs日）③ hsgt/margin/limit 取整月数据（非仅月末一天）；pct_above_ma60>1.0 边界 bug 已修复
+- [x] **所有抽象指标已注释物理含义**（up_down_ratio / amount_gini / pe_dispersion / pb_pe_divergence / avg_correlation / cross_sectional_vol / downside_vol_ratio / 资金流四指标）
+- [x] **逐月回补脚本**：`scripts/backfill_market_sentiment.py`（--start/--end/--resume，断点续跑）
+- [ ] **待全量回补**：2010-2026 全历史分年分批跑（单月~4-7min，约 192 个月）
+- [ ] **null 容忍/不可覆盖字段**：待后续决策（limit_up_count 早年、margin 早年可能缺失等）
 
-### 0.5c 市场状态(regime)方法论（已讨论定稿，底表已落代码，打分待开工）
-单开条目记录定案决策（见研究笔记 §8.4）：
+### 0.5c 市场状态(regime)方法论（已讨论定稿，待实现）
+
+> **2026-07-02 更新**：设计定案——滚动百分位 + 等权投票 + 最小滞回。CLAUDE.md 原则2 强化为硬约束（零固定阈值、等权优先、验证靠下游有用性）。
+
 - [x] 全局 + 风格二维 regime，全A + 50/300/500/1000/2000 各一行
-- [x] 3 态(牛/震荡/熊) + 滞回 + 最小持续期
-- [x] 先验权重透明打分，不上 HMM
-- [x] 指标设计按私募常用精简原则 — 已实现为五维度 36 列（见 0.5b）
-- [ ] **待开工**：综合维度打分 logic（价/量/波/估值/资金 → 统一 regime score）→ panel_market_regime
+- [x] 3 态(牛/震荡/熊) + 滞回 + 最短持续期
+- [x] **百分位化（非固定阈值）**：幅度指标取 5 年滚动分位（vol > 75pct → 高波），方向指标不做百分位（close > ma → 偏多）
+- [x] **等权投票聚合**：维度内简单计数（≥+2 = trend_up），不等权不加。regime 无 ground truth，不等权无法被下游证明更好
+- [x] **滞回最小化**：只过滤"牛→震荡→牛"单月抖动，不强行修正持续方向变化。raw 信号质量是根本，滞回是安全网
+- [x] **验证标准**：下游夏普/回撤改善 → regime 有用，不追求"label 准确率"
+- [ ] **待实现**：`data/panel/market_regime.py`（读 market_sentiment_monthly → 百分位化 → 维度投票 → 综合判定 → 滞回），挂 schedule_compute.json monthly 节，depends_on: market_sentiment_monthly
 
 ### 0.5d 中间 Panel 表（panel_stock_daily / percentiles 重构）🔄 2026-06-28
 为市场状态表及其他下游提供干净底座，已完成重构：

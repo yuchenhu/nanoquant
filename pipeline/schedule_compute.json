@@ -90,8 +90,8 @@
     {
       "task_id": "market_sentiment_monthly",
       "class": "data.panel.market_sentiment_monthly.MarketSentimentMonthlyCalculator",
-      "description": "市场×月 情绪",
-      "depends_on": ["market_sentiment_daily"]
+      "description": "市场×月 情绪（五维度36列：价11+量6+波6+估值7+资金7，指数+成分双视角）",
+      "depends_on": ["stock_daily_panel", "index_daily", "moneyflow_hsgt", "margin", "limit_list_d"]
     },
     {
       "task_id": "stock_mv_monthly",

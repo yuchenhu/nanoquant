@@ -5,6 +5,44 @@
 
 ***
 
+## 0. 日常 CLI & 协作速查（每次写代码前扫一眼）
+
+### 0.1 PowerShell / cmd 高频坑
+
+本项目命令行环境是 **Windows cmd**，不是 PowerShell。反复踩过的坑：
+
+| 坑 | 症状 | 正确做法 |
+|---|---|---|
+| `&&` 在 PS 里报错 | `标记"&&"不是此版本中的有效语句分隔符` | 在 **cmd** 里跑；或用 `cmd /c "..."` 包裹 |
+| SQL 里 `<` `>` 被 PS 吃掉 | `WHERE a <= b` → PS 把 `<` 当重定向 | **含 SQL 的 `-c` 一律写 .py 文件再跑** |
+| 引号转义地狱 | `-c "print('x')"` → `'` 和 `"` 互食 | 避免 `-c`，写 .py → 跑 → 删 |
+| GBK 控制台崩溃 | `print("中文")` → `UnicodeEncodeError` | 日志统一 UTF-8 写文件；代码用 ASCII 标记 |
+| 沙箱输出丢失 | 任何长输出可能截断为空白 | 重要输出 `> out.txt 2>&1`，跑完 `type out.txt` |
+
+**惯例**：Agent 给命令 → 作者本地 cmd 跑 → 贴回日志。Agent 不在沙箱跑补数/EDA。
+
+### 0.2 协作效率 Tips（给作者：从数据分析师到软件工程师）
+
+> 你的数据分析直觉是一流资产，但这些工程习惯能让我们少走 80% 弯路：
+
+| # | Tip | 为什么 | 怎么做 |
+|---|---|---|---|
+| 1 | **小步验证，不要一股脑改完才跑** | 改 10 行 → 跑了报错 → 不知道哪行炸 | 改一处 → 跑一次 → 确认 OK → 改下一处。1 个交易日 → 1 个月 → 1 年 |
+| 2 | **mock 先于真实数据** | 连库跑一次几分钟，mock 秒级 | pandas 语法：用 5 行 DataFrame 验证 merge/pivot/asof，通了再上库 |
+| 3 | **改数据前先看 schema** | 表里缺列 → `net_mf_vol` 报错 → 白跑 | `SELECT COUNT(*) FROM table`、看 `output_schema`、确认列对齐 |
+| 4 | **日志是眼睛** | 没日志 = 盲跑，不知道卡在哪步 | 长流程每个 join 加 `[n/8] join xxx...` + 行数 + 耗时 |
+| 5 | **幂等是好朋友** | 跑崩了能重跑，不丢数据 | overwrite + partition_col，重跑 = 删该分区 + 重写 |
+| 6 | **一次改一个模块** | 改三处 → 三处都炸 → 不知道谁炸 | 改完 stock_daily_panel 验证 OK 再动别的 |
+| 7 | **读完再改** | 凭记忆改代码 = 50% 概率改错位置 | 每次改之前 `Read` 当前代码，确认上下文 |
+| 8 | **错误信息 = 路标** | 报错里文件名+行号+错误类型直接告诉你答案 | 读 traceback 从底向上：最后一行的错误类型 → 往前找自己的代码 |
+
+**对我们协作的影响**：
+- 我每次给命令，你跑完贴日志，我分析 → 这是"异步协作"的正常节奏，不低效。
+- 但如果一次性给我 3 步任务、没验证、没日志，我猜错概率翻 3 倍。
+- **最理想的节奏**：你提 1 个明确需求 → 我改 1 个模块 → 你跑 1 条命令验证 → 确认再下一步。
+
+***
+
 ## 1. 入口脚本速查
 
 | 脚本                            | 用途                   | 常用调用                                 |
@@ -116,7 +154,7 @@ from config.database import engine, execute_sql, save_to_database, upsert_data
 df = execute_sql("SELECT * FROM panel_stock_daily WHERE trade_date = '20240101'")
 
 # 落库
-save_to_database(df, "my_table", write_mode="upsert")
+save_to_database(df, "my_table", write_mode="overwrite", partition_col="trade_date")
 #   write_mode: "overwrite"（先删分区再批量写，推荐）/ "truncate"（全量刷新）/ "upsert"（已废弃，逐行慢）
 
 # overwrite：先按 partition_col DELETE 本批分区，再批量 append（幂等 + 去重护栏）
@@ -172,7 +210,7 @@ class BaseCalculator:
     table_name: str = ""           # 子类必填
     biz_date_col: str = "trade_date"  # trade_date / ann_date / snapshot_date
     primary_keys: list[str] = []   # 子类必填
-    write_mode: str = "upsert"     # overwrite（推荐）/ truncate / upsert（废弃）
+    write_mode: str = "upsert"     # 旧默认值；新 Calculator 必须显式声明 overwrite/truncate
     partition_col: str | None      # write_mode=overwrite 时的分区键（trade_date/end_date/ex_date）
     output_schema: dict | None     # 加工层手写；接入层 None（自动推断）
     type_overrides: dict | None    # 接入层类型微调，如 {"desc": "TEXT"}
@@ -337,7 +375,8 @@ class MyFactorCalculator(FactorCalculator):
     table_name = "my_factor"          # → factor_my_factor（基类自动加前缀）
     primary_keys = ["ts_code", "trade_date"]
     biz_date_col = "trade_date"
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "trade_date"      # overwrite 必须声明分区键
 
     output_schema = {
         "ts_code": "string",
@@ -508,6 +547,62 @@ run_mcp(mcp_tushareMcp, index_weight, {index_code:"000016.SH", start_date:"20240
 ### 7.11 指标列必须注释物理意义
 
 每个指标回答一个具体问题（如"大家同涨同跌吗""跌比涨更剧烈吗"），不写"XX 指标"式废话注释。公式来源如有业界标准（CBOE、学术论文）必须注明。
+
+### 7.12 pandas merge_asof + by 排序陷阱
+
+**现象**：`pd.merge_asof(left, right, on='trade_date_dt', by='ts_code', direction='backward')` 报 `ValueError: left keys must be sorted`，即使已经调了 `sort_values(['ts_code', 'trade_date_dt']).reset_index(drop=True)`。
+
+**根因**：pandas 2.x 的 `merge_asof` 加 `by` 时，对 `on` 列做**全局** `is_monotonic_increasing` 检查。按 `['ts_code', 'trade_date_dt']` 排序后，`trade_date_dt` 跨股票会"重置"（A股最后一天 → B股第一天），不满足全局单调。
+
+**正确做法**：只按 `on` 列排序（不按 `by` 列），让 `on` 列全局单调递增。`by` 分组内自然保序，语义不变。
+
+```python
+# ❌ 错误：按 by+on 排序，on 列不全局单调
+left = df.sort_values(['ts_code', 'trade_date_dt'])
+
+# ✅ 正确：只按 on 排序，全局单调，by 分组内也保序
+left = df.sort_values('trade_date_dt').reset_index(drop=True)
+right = right_df.sort_values('trade_date_dt').reset_index(drop=True)
+pd.merge_asof(left, right, on='trade_date_dt', by='ts_code', direction='backward')
+```
+
+### 7.13 merge_asof / pandas 语法调试不要连数据库
+
+**原则**：调试 `merge_asof`、`pivot_table`、`groupby` 等 pandas 语法时，用 5-10 行 mock DataFrame 本地验证，不要跑真实 pipeline（拉库→join→落库 耗时数分钟）。
+
+```python
+# 本地快速验证 merge_asof 语法
+import pandas as pd
+left = pd.DataFrame({
+    'ts_code': ['A', 'A', 'B', 'B'],
+    'trade_date_dt': pd.to_datetime(['2020-01-02', '2020-01-03', '2020-01-02', '2020-01-03']),
+})
+right = pd.DataFrame({
+    'ts_code': ['A', 'A', 'B', 'B'],
+    'trade_date_dt': pd.to_datetime(['2020-01-01', '2020-01-02', '2020-01-01', '2020-01-02']),
+    'val': [1, 2, 3, 4],
+})
+left_sorted = left.sort_values('trade_date_dt').reset_index(drop=True)
+right_sorted = right.sort_values('trade_date_dt').reset_index(drop=True)
+pd.merge_asof(left_sorted, right_sorted, on='trade_date_dt', by='ts_code', direction='backward')
+```
+
+跑通后再上真实数据。**切忌每改一行就重跑完整 pipeline。**
+
+### 7.14 Trae 沙箱不可靠 — 不跑 Python，交给作者本地 cmd ⚠️
+
+**Trae 内置沙箱有严重问题**：PowerShell 引号转义异常、中文输出截断、进程被随机 `Ctrl+C` 杀死（exit code `-1073741510`）、`run_compute` 等长时间任务的输出完全丢失。
+
+**原则**：
+- **AI Agent 不在沙箱里跑任何 Python 脚本**（包括 EDA、补数、`run_compute`、`backfill`）。只给命令，让作者在本地 cmd 执行。
+- **Python 语法/逻辑调试一律用 mock DataFrame**（见 §7.13），不连数据库。
+- 沙箱仅用于：`pip install`、`git` 操作、`Get-ChildItem` 等简单 shell 命令。
+
+**正确做法**：Agent 给出命令 → 作者本地 cmd 跑 → 作者贴回日志/结果 → Agent 分析。
+
+### 7.15 PowerShell / 命令行 常见坑
+
+→ 已前置到 [§0.1](#01-powershell--cmd-高频坑)。不再赘述。
 
 ***
 
