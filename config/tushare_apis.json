@@ -494,5 +494,40 @@
       "market": "",
       "limit": 5000
     }
+  },
+  "fund_factor_pro": {
+    "api_name": "fund_factor_pro",
+    "description": "场内基金技术面因子（60+ 指标：MA/MACD/RSI/Boll/KDJ/ATR 等，Tushare 自产，覆盖全历史）",
+    "table_name": "fund_factor_pro",
+    "incremental_strategy": "by_trade_date",
+    "biz_date_col": "trade_date",
+    "write_mode": "overwrite",
+    "frequency": "daily",
+    "fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_change,vol,amount,asi_bfq,asit_bfq,atr_bfq,bbi_bfq,bias1_bfq,bias2_bfq,bias3_bfq,boll_lower_bfq,boll_mid_bfq,boll_upper_bfq,brar_ar_bfq,brar_br_bfq,cci_bfq,cr_bfq,dfma_dif_bfq,dfma_difma_bfq,dmi_adx_bfq,dmi_adxr_bfq,dmi_mdi_bfq,dmi_pdi_bfq,downdays,updays,dpo_bfq,madpo_bfq,ema_bfq_5,ema_bfq_10,ema_bfq_20,ema_bfq_30,ema_bfq_60,ema_bfq_90,ema_bfq_250,emv_bfq,maemv_bfq,expma_12_bfq,expma_50_bfq,kdj_bfq,kdj_d_bfq,kdj_k_bfq,ktn_down_bfq,ktn_mid_bfq,ktn_upper_bfq,lowdays,topdays,ma_bfq_5,ma_bfq_10,ma_bfq_20,ma_bfq_30,ma_bfq_60,ma_bfq_90,ma_bfq_250,macd_bfq,macd_dea_bfq,macd_dif_bfq,mass_bfq,ma_mass_bfq,mfi_bfq,mtm_bfq,mtmma_bfq,obv_bfq,psy_bfq,psyma_bfq,roc_bfq,maroc_bfq,rsi_bfq_6,rsi_bfq_12,rsi_bfq_24,taq_down_bfq,taq_mid_bfq,taq_up_bfq,trix_bfq,trma_bfq,vr_bfq,wr_bfq,wr1_bfq,xsii_td1_bfq,xsii_td2_bfq,xsii_td3_bfq,xsii_td4_bfq",
+    "params": {
+      "ts_code": "",
+      "trade_date": "",
+      "start_date": "",
+      "end_date": "",
+      "limit": 5000
+    }
+  },
+  "fund_nav": {
+    "api_name": "fund_nav",
+    "description": "公募基金净值（日频 unit_nav/accum_nav/adj_nav，用于 ETF 折溢价计算）",
+    "table_name": "fund_nav",
+    "incremental_strategy": "by_trade_date",
+    "biz_date_col": "nav_date",
+    "write_mode": "overwrite",
+    "frequency": "daily",
+    "fields": "ts_code,nav_date,unit_nav,accum_nav,adj_nav,accum_div,update_flag",
+    "params": {
+      "ts_code": "",
+      "nav_date": "",
+      "start_date": "",
+      "end_date": "",
+      "market": "E",
+      "limit": 5000
+    }
   }
 }
