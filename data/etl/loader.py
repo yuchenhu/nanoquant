@@ -1,4 +1,4 @@
-"""接入层 Calculator（26 个 tushare 接口 1:1 复刻）。
+"""接入层 Calculator（31 个 tushare 接口 1:1 复刻）。
 
 每个 Calculator 声明 config_key（对应 config/tushare_apis.json），继承对应中间基类：
 - 行情类 → TushareByTradeDateCalculator（逐交易日 overwrite）
@@ -421,7 +421,7 @@ class DisclosureDateCalculator(TushareByPeriodCalculator):
         return self.fetch_tushare(end_date=period, **params)
 
 
-# ==================== fund: 场内基金/ETF（4 个） ====================
+# ==================== fund: 场内基金/ETF（6 个） ====================
 
 class FundBasicCalculator(TushareFullRefreshCalculator):
     """基金基本信息（场内 ETF/LOF，market=E，全量刷新）。"""
@@ -449,6 +449,36 @@ class FundShareCalculator(TushareByTradeDateCalculator):
     config_key = "fund_share"
     table_name = "fund_share"
     primary_keys = ["ts_code", "trade_date"]
+
+
+class FundFactorProCalculator(TushareByTradeDateCalculator):
+    """场内基金技术面因子（60+ 指标：MA/MACD/RSI/Boll/KDJ/ATR 等）。
+    
+    Tushare 自产数据，覆盖全历史。逐交易日拉全市场。
+    积分要求：5000。
+    """
+    config_key = "fund_factor_pro"
+    table_name = "fund_factor_pro"
+    primary_keys = ["ts_code", "trade_date"]
+
+
+class FundNavCalculator(TushareByTradeDateCalculator):
+    """公募基金净值（日频 unit_nav/accum_nav/adj_nav）。
+    
+    biz_date_col='nav_date'（非 trade_date），数据按净值日期组织。
+    fetch_one_period 内部把 base 传进来的 trade_date 参数映射到 tushare 的 nav_date。
+    用途：ETF 折溢价率 = fund_daily.close / fund_nav.unit_nav - 1。
+    积分要求：2000。
+    """
+    config_key = "fund_nav"
+    table_name = "fund_nav"
+    primary_keys = ["ts_code", "nav_date"]
+    write_mode = "overwrite"
+    partition_col = "nav_date"  # 覆盖基类的 trade_date，用净值日期分区
+
+    def fetch_one_period(self, trade_date: str, **params) -> Optional[pd.DataFrame]:
+        # by_trade_date 策略按交易日调度，但 tushare fund_nav 接口的参数是 nav_date
+        return self.fetch_tushare(nav_date=trade_date, **params)
 
 
 # ===== 任务注册表（供 runner 通过 class_path 找到） =====
@@ -482,4 +512,6 @@ CALCULATORS = {
     "fund_daily": FundDailyCalculator,
     "fund_adj": FundAdjCalculator,
     "fund_share": FundShareCalculator,
+    "fund_factor_pro": FundFactorProCalculator,
+    "fund_nav": FundNavCalculator,
 }
