@@ -4,6 +4,17 @@
 > 本文档记录从「有数据」到「能跑出可信结论 / 能实盘」还缺的部分，按优先级分阶段。
 > 客观评估，逐项勾选。
 
+### 2026-07-04 进度：ETF 数据底座扩展 + ETF 轮动策略设计
+
+- [x] **接入层 +2 接口**：`fund_factor_pro`（60+ ETF 技术因子，5000 积分）+ `fund_nav`（ETF 净值，2000 积分），`tushare_apis.json` 配置 + `loader.py` Calculator + `TUSHARE_API_GUIDE.md` 更新
+- [x] **ETF 数据全景梳理**：19 个 ETF/基金/港股通 MCP 接口探查、积分权限核对、更新策略确认
+- [x] **ETF 轮动工作流定案**：股票 ETF 选指数→找 ETF；商品/债券 ETF 直接选 ETF。两阶段工作流（选指数 + 选 ETF + 相关性约束）
+- [x] **market_sentiment_monthly review**：提 4 条建议——加 sector/style 维度、加 ETF 资金流指标、all 维度改 ETF 可投视角、月频对周频轮动的适配性
+- [x] **ETF 资金流价值判断**：中低频宽基轮动场景下 ETF 折溢价=噪音、份额变化=冗余信息。用现有 fund_share × close 自算即可，不需充钱升 8000 分
+- [ ] Next: `fund_factor_pro` + `fund_nav` 本地验证拉数 → `panel_etf_daily` 面板表 → `config/etf_universe.py` 指数→ETF 映射
+
+---
+
 ### 2026-07-02 进度：market_sentiment_monthly 重构 + EDA 验证 + regime 方法论定案
 
 - [x] **market_sentiment_monthly 重构**：删 ma120、加 dv_ttm_median、idx_ret 改日历月对齐、PE 5y 分位改月末抽样（IO ↓~20×）、amount_pct 改月vs月对比
@@ -39,7 +50,7 @@
 
 ## 阶段 0 · 当前已完成 ✅
 
-- [x] 29 个 tushare 接口接入（含 ETF：fund_basic/daily/adj/share）
+- [x] 31 个 tushare 接口接入（含 ETF：fund_basic/daily/adj/share/factor_pro/nav）
 - [x] 4 类更新策略 + overwrite 幂等 + 去重护栏
 - [x] schema-as-code（数值 DOUBLE / 字符串两档自动推断）
 - [x] 增量起点 `min(水位, today-窗口)`（覆盖修订 + 久未开机不漏）
