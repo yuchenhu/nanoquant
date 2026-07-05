@@ -326,6 +326,7 @@ class StockDailyPanelCalculator(PanelCalculator):
         except Exception as e:
             self.logger.error(f"  merge_asof 失败: {e}")
 
+        data.drop('trade_date_dt', axis=1, inplace=True, errors='ignore')
         self.logger.info(f"  完成后行数: {len(data)}")
         return data
 

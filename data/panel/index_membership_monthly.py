@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import text
 
 from config.universe import ALL_INDEX_CODES, CODE_TO_CANONICAL, INDEX_NAME
 from core.dates import get_monthly_last_tradedate
