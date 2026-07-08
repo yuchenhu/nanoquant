@@ -1,7 +1,8 @@
 """data/panel/ 包：Panel 计算层（结构化数据加工）。
 
-7 个 Panel Calculator（从 data/sql/ 迁移）：
+9 个 Panel Calculator：
 - StockDailyPanelCalculator: 个股×日 行情宽表（panel_stock_daily）
+- FundDailyPanelCalculator: ETF×日 行情宽表（panel_fund_daily）
 - StockPercentilesCalculator: 个股×日 历史百分位（panel_stock_percentiles）
 - MarketSentimentDailyCalculator: 市场×日 情绪（panel_market_sentiment_daily）
 - MarketSentimentMonthlyCalculator: 市场×月 情绪（panel_market_sentiment_monthly）
@@ -20,6 +21,7 @@ from data.panel.financial_indicators_snapshot import (
 from data.panel.financial_statements_snapshot import (
     FinancialStatementsSnapshotCalculator,
 )
+from data.panel.fund_daily_panel import FundDailyPanelCalculator
 from data.panel.index_membership_monthly import IndexMembershipMonthlyCalculator
 from data.panel.market_sentiment_daily import MarketSentimentDailyCalculator
 from data.panel.market_sentiment_monthly import (
@@ -32,6 +34,7 @@ from data.panel.stock_percentiles import StockPercentilesCalculator
 __all__ = [
     "PanelCalculator",
     "StockDailyPanelCalculator",
+    "FundDailyPanelCalculator",
     "StockPercentilesCalculator",
     "MarketSentimentDailyCalculator",
     "MarketSentimentMonthlyCalculator",
@@ -45,6 +48,7 @@ __all__ = [
 # Panel Calculator 注册表（供 pipeline 调度）
 PANEL_CALCULATORS = {
     "stock_daily": StockDailyPanelCalculator,
+    "fund_daily": FundDailyPanelCalculator,
     "stock_percentiles": StockPercentilesCalculator,
     "market_sentiment_daily": MarketSentimentDailyCalculator,
     "market_sentiment_monthly": MarketSentimentMonthlyCalculator,

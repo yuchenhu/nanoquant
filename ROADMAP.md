@@ -4,6 +4,36 @@
 > 本文档记录从「有数据」到「能跑出可信结论 / 能实盘」还缺的部分，按优先级分阶段。
 > 客观评估，逐项勾选。
 
+### 2026-07-08 进度：ETF 维度映射 + panel_fund_daily 宽表 + 拓扑依赖调度
+
+- [x] **ETF 指数名自动解析**：`config/etf_universe.py` — 从基金名称正则提取跟踪指数名（如"华夏上证50ETF"→"上证50"），命中率 98.8%
+- [x] **申万一级映射**：253 个关键词 → 25 个 SW L1 行业（801xxx.SI），与 `panel_stock_daily.l1_code` 完全对齐
+- [x] **风格大类映射**：华泰证券 2020 五大风格（周期/消费/金融/成长/稳定）+ 微调（军工→成长），SW_TO_GROUP 字典
+- [x] **`config/etf_universe.py`**：永久配置文件，输出 `(sw_l1_code, sw_l1_name, style_cap, style_type, sector_group)` 五元组。`extract_index_name()` + `classify_etf()` 双函数，供 Calculator 和脚本共用
+- [x] **`panel_fund_daily` 宽表**：ETF×日 行情宽表，35 列（行情+复权+净值+份额+维度标签+流动性分档），基金内日频
+  - `fund_daily` + `fund_adj` + `fund_nav` (merge_asof backward PIT) + `fund_share` (merge_asof backward PIT) + `fund_basic` + 维度标签
+  - 派生指标：`log_return`, `vwap`, `discount_rate`（折溢价率）, `fund_size`（规模亿元）, `list_days`（上市天数）, `is_suspend`（停牌标记）
+  - 截面分档：`amount_rank`（成交额分位）, `size_rank`（规模分位）
+  - 已验证：2024-05-06 单日 1359 只 ETF，985 只股票型被动指数，分类正确
+- [x] **`run_compute.py` 拓扑排序**：读 `schedule_compute.json` 的 `depends_on`，BFS 拓扑排序保证上游先跑。严格模式：上游失败→下游全部跳过
+- [x] **`fund_factor_pro` + `fund_nav` 全量回补**：增量 start_date 兜底修复（无水位时取 3 天前），6 张 fund 表全量回补命令已提供
+- [ ] Next: `panel_fund_daily` 全量回补 2010-2026 → ETF 因子构建 → ETF 轮动策略回测
+
+---
+
+### 2026-07-07 进度：market_sentiment 全量回补完成 + 数据质控 + north_money 单位归一化
+
+- [x] **全量回补 2010-01 ~ 2026-06**：198 个月，16 个自然年批次，成功完成
+- [x] **inf 修复**：`up_down_ratio` 全涨月→`inf` 导致落库失败，新增 `_safe_div()` 包装 5 处除零风险
+- [x] **I/O 优化**：`backfill_market_sentiment.py` 改为按年批量拉数（16 次 IO 替代 192 次），单年内存 ~600MB 安全
+- [x] **ma120 孤儿列**：MySQL 表残留（代码已删），手动 `DROP COLUMN` 处理。确认 schema-as-code 只增列不删列是已知设计取舍
+- [x] **north_money 单位跳变**：2024-08-19 tushare 接口将 `north_money` 万元→元（×10000），`_normalize_north_money()` 自动归一到万元
+- [x] **坑记入文档**：DEV_GUIDE.md §7.16 + TUSHARE_API_GUIDE.md §4.6
+- [x] **全量数据分析**：36 列 2010-2026 趋势与 A 股历史印证通过（仅 `north_money` 需修复）。趋势文档 → `research/market_sentiment_trends.md`
+- [ ] Next: `panel_market_regime` 实现
+
+---
+
 ### 2026-07-04 进度：ETF 数据底座扩展 + ETF 轮动策略设计
 
 - [x] **接入层 +2 接口**：`fund_factor_pro`（60+ ETF 技术因子，5000 积分）+ `fund_nav`（ETF 净值，2000 积分），`tushare_apis.json` 配置 + `loader.py` Calculator + `TUSHARE_API_GUIDE.md` 更新
@@ -23,7 +53,7 @@
 - [x] **2024 全年 12 个月 EDA 验证**：手算交叉验证通过；发现并修复 4 个 bug
 - [x] **CLAUDE.md 原则 2 强化**：零固定阈值、等权优先加权需举证、验证靠下游有用性（4 条硬约束）
 - [x] **regime 方法论定案**：滚动百分位 + 等权投票 + 最小滞回，待实现 `panel_market_regime`
-- [ ] Next: 全量回补 2010-2026 → `panel_market_regime` 实现
+- [x] **全量回补 2010-2026** → `panel_market_regime` 实现
 
 ---
 ### 2026-06-28 进度：DQC 审计 + 频率超限修复 + 缺失表补齐

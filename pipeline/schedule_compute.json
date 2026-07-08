@@ -14,6 +14,12 @@
       "depends_on": ["index_weight"]
     },
     {
+      "task_id": "fund_daily_panel",
+      "class": "data.panel.fund_daily_panel.FundDailyPanelCalculator",
+      "description": "ETF×日 行情宽表（行情+复权+净值+份额+行业/风格/大类维度标签）",
+      "depends_on": ["fund_basic", "fund_daily", "fund_adj", "fund_nav", "fund_share"]
+    },
+    {
       "task_id": "market_sentiment_daily",
       "class": "data.panel.market_sentiment_daily.MarketSentimentDailyCalculator",
       "description": "市场×日 情绪",

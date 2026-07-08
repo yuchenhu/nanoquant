@@ -102,6 +102,14 @@ class BaseCalculator:
         start_date = self._normalize_date(start_date) or self._next_after_biz_date()
         end_date = self._normalize_date(end_date) or get_today_str()
 
+        # 无水位时兜底：从 3 天前开始（覆盖周末/节假日，保证至少拉一点数据）
+        if not start_date:
+            from datetime import datetime, timedelta
+            start_date = (datetime.now() - timedelta(days=3)).strftime("%Y%m%d")
+            self.logger.info(
+                f"{self.table_name} 无水位的首次运行，start 兜底为 {start_date}"
+            )
+
         self.logger.info(
             f"{self.table_name} update: biz_date [{start_date}, {end_date}], "
             f"params={list(params.keys())}"

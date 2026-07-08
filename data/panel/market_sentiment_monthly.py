@@ -53,6 +53,12 @@ logger = logging.getLogger(__name__)
 class MarketSentimentMonthlyCalculator(PanelCalculator):
     """市场×月 情绪/状态底表（五维度 36 列，index 5 指数 + all 全A）。"""
 
+    # ---- 数据源坑 ----
+    # moneyflow_hsgt.north_money 单位在 2024-08-19 发生跳变（万元→元，×10000）。
+    # 此处归一化到「万元」统一口径。详见 DEV_GUIDE.md §7.x 和 TUSHARE_API_GUIDE.md。
+    NORTH_MONEY_UNIT_BREAK = "2024-08-19"  # 此日期起 tushare 返回单位变为「元」
+    NORTH_MONEY_SCALE = 10000              # 旧单位(万元) × SCALE = 新单位(元)
+
     table_name = "market_sentiment_monthly"
     primary_keys = ["trade_date", "dimension_type", "dimension_value"]
     biz_date_col = "trade_date"
@@ -120,6 +126,9 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         "pb_pe_divergence": "float",
 
         # ===== 资金(7) =====
+        # north_money/margin_balance：全A独有，月度总和。单位已归一化为「万元」
+        #   注意：tushare moneyflow_hsgt 接口 2024-08-19 起 north_money 单位突变（万元→元），
+        #   此处 _normalize_north_money() 自动统一到万元。详见 DEV_GUIDE.md §7
         "north_money": "float", "margin_balance": "float",
         # net_inflow_ratio：净主动买入 / 总主动成交。>0=主动买盘主导，<0=主动卖盘主导
         "net_inflow_ratio": "float",
@@ -186,6 +195,38 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
             return yms[idx - offset] if idx - offset >= 0 else None
         except ValueError:
             return None
+
+    @staticmethod
+    def _safe_div(num: float, den: float) -> Optional[float]:
+        """安全除法，除零或结果为 inf 时返回 None。"""
+        if den == 0 or not np.isfinite(num) or not np.isfinite(den):
+            return None
+        result = num / den
+        return float(result) if np.isfinite(result) else None
+
+    # ================================================================
+    # north_money 单位归一化（万元←元，2024-08-19 tushare 接口跳变）
+    # ================================================================
+
+    @classmethod
+    def _normalize_north_money(cls, hsgt: pd.DataFrame) -> pd.DataFrame:
+        """归一化 north_money 到「万元」统一口径。
+
+        tushare moneyflow_hsgt 接口在 2024-08-19 将 north_money 单位
+        从「万元」改为「元」（×10000）。此处将新单位值除以 10000，
+        统一为万元，保证跨时间可比。
+        """
+        if hsgt.empty or "north_money" not in hsgt.columns:
+            return hsgt
+        hsgt = hsgt.copy()
+        break_dt = pd.Timestamp(cls.NORTH_MONEY_UNIT_BREAK)
+        new_unit_mask = hsgt["trade_date"] >= break_dt
+        n_new = new_unit_mask.sum()
+        if n_new > 0:
+            hsgt.loc[new_unit_mask, "north_money"] = (
+                hsgt.loc[new_unit_mask, "north_money"] / cls.NORTH_MONEY_SCALE
+            )
+        return hsgt
 
     # ================================================================
     # get_data：上游取数
@@ -318,6 +359,9 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         for df in [idx_all, psd, psd_monthly, hsgt, margin_df, limit]:
             if "trade_date" in df.columns:
                 df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
+
+        # north_money 单位归一化：2024-08-19 起 tushare 改「万元→元」
+        hsgt = self._normalize_north_money(hsgt)
 
         # ---- 预计算1：个股 MA60/MA250（一次算、所有维度复用） ----
         self.logger.info("预计算个股 MA60/MA250...")
@@ -506,8 +550,8 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
             grp["ret"] = grp["last"] / grp["first"] - 1
             up = int((grp["ret"] > 0).sum())
             dn = int((grp["ret"] < 0).sum())
-            r["profit_ratio"] = float(up / (up + dn)) if (up + dn) > 0 else None
-            r["up_down_ratio"] = float(up / dn) if dn > 0 else (float("inf") if up > 0 else None)
+            r["profit_ratio"] = self._safe_div(up, up + dn)
+            r["up_down_ratio"] = self._safe_div(up, dn)
         else:
             r["profit_ratio"] = None
             r["up_down_ratio"] = None
@@ -594,7 +638,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         r["amount_gini"] = None
         if not month_stk.empty and "amount" in month_stk.columns:
             amt = month_stk.groupby("ts_code")["amount"].sum().sort_values()
-            if len(amt) >= 5:
+            if len(amt) >= 5 and amt.sum() > 0:
                 n = len(amt)
                 rank = np.arange(1, n + 1)
                 r["amount_gini"] = float(
@@ -631,7 +675,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
                 idx_rets = idx_month["close"].pct_change().dropna()
                 neg, pos = idx_rets[idx_rets < 0], idx_rets[idx_rets > 0]
                 if len(neg) >= 3 and len(pos) >= 3:
-                    r["downside_vol_ratio"] = float(neg.std() / pos.std())
+                    r["downside_vol_ratio"] = self._safe_div(float(neg.std()), float(pos.std()))
 
         # --- 指数自身：1年最大回撤 ---
         if not idx_hist.empty:
@@ -652,7 +696,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
                 daily_ew = stk_ret.groupby("trade_date")["_ret"].mean()
                 std_i_mean = stk_ret.groupby("ts_code")["_ret"].std().mean()
                 if std_i_mean and std_i_mean > 0:
-                    r["avg_correlation"] = float(daily_ew.var() / (std_i_mean ** 2))
+                    r["avg_correlation"] = self._safe_div(float(daily_ew.var()), float(std_i_mean ** 2))
 
                 # --- 成分截面：月收益截面标准差（个股分化度） ---
                 # 高=个股表现差异大（选股重要），低=β行情（仓位决定收益）
@@ -694,7 +738,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         # >2=贵的和便宜的差距大（市场对"谁值钱"没共识），<1.5=共识强
         if len(pe) >= 10:
             q75, q25 = pe.quantile(0.75), pe.quantile(0.25)
-            r["pe_dispersion"] = float(q75 / q25) if q25 > 0 else None
+            r["pe_dispersion"] = self._safe_div(float(q75), float(q25))
 
         # 5年历史分位：从月末抽样数据中过滤当前成分股，逐月算中位数后求分位
         # 关键优化：月末抽样（60个点/5年）替代逐日（1250个点），IO减少~20倍

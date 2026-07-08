@@ -604,6 +604,19 @@ pd.merge_asof(left_sorted, right_sorted, on='trade_date_dt', by='ts_code', direc
 
 → 已前置到 [§0.1](#01-powershell--cmd-高频坑)。不再赘述。
 
+### 7.16 moneyflow_hsgt.north_money 单位跳变（2024-08-19）
+
+**症状**：`north_money` 在 2024年8月起数值跳变 ~10,000 倍，月度加总后跨年不可比。
+
+**根因**：tushare `moneyflow_hsgt` 接口在 **2024-08-19** 将 `north_money` 字段单位从「万元」改为「元」。
+- 2014-01 ~ 2024-08-18：单位为 **万元**（日值范围 -17,000 ~ +21,000）
+- 2024-08-19 至今：单位为 **元**（日值范围 -13,000 ~ +510,000）
+- 跳变精确发生在 2024-08-19：前一天 `-6,774`（万元），当天 `88,110`（元）
+
+**修复**：`market_sentiment_monthly.py` 的 `_normalize_north_money()` 自动将 post-2024-08-19 数据除以 10,000，统一归一到「万元」。**所有消费 north_money 的下游代码无需额外处理。**
+
+**验证**：`scripts/find_north_money_break.py` 可重新扫描确认跳变点未漂移。
+
 ***
 
 ## 8. 开放问题（遇到时询问作者）
