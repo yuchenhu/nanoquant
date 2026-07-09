@@ -7,39 +7,32 @@
 
 ## 0. 日常 CLI & 协作速查（每次写代码前扫一眼）
 
-### 0.1 PowerShell / cmd 高频坑
+> **协作节奏与工程硬规则（harness 约束 H1-H12、mock-first / 小步验证 / 一次一个模块 / 日志即眼睛 / 根因不跳过 / 沙箱跑 Python 按风险分档 等）的单一事实源是 `.trae/rules/nanoquant_loop.md`**。本节只保留 cmd/PS 环境**具体坑表**（reference），不重复规则。
 
-本项目命令行环境是 **Windows cmd**，不是 PowerShell。反复踩过的坑：
+### 0.1 PowerShell / cmd 高频坑（环境 reference）
+
+本项目命令行环境是 **Windows cmd**，不是 PowerShell。反复踩过的坑（对应项目规则 H1 沙箱跑 Python 按风险分档）：
 
 | 坑 | 症状 | 正确做法 |
 |---|---|---|
 | `&&` 在 PS 里报错 | `标记"&&"不是此版本中的有效语句分隔符` | 在 **cmd** 里跑；或用 `cmd /c "..."` 包裹 |
 | SQL 里 `<` `>` 被 PS 吃掉 | `WHERE a <= b` → PS 把 `<` 当重定向 | **含 SQL 的 `-c` 一律写 .py 文件再跑** |
 | 引号转义地狱 | `-c "print('x')"` → `'` 和 `"` 互食 | 避免 `-c`，写 .py → 跑 → 删 |
-| GBK 控制台崩溃 | `print("中文")` → `UnicodeEncodeError` | 日志统一 UTF-8 写文件；代码用 ASCII 标记 |
+| GBK 控制台崩溃 | `print("中文")` → `UnicodeEncodeError` | 日志统一 UTF-8 写文件；代码用 ASCII 标记（对应 H2 禁 emoji） |
 | 沙箱输出丢失 | 任何长输出可能截断为空白 | 重要输出 `> out.txt 2>&1`，跑完 `type out.txt` |
 
-**惯例**：Agent 给命令 → 作者本地 cmd 跑 → 贴回日志。Agent 不在沙箱跑补数/EDA。
+**惯例**：快/短/只读/ASCII 输出的脚本（schema 查询、行数/null 统计、mock DataFrame 试跑）可直接沙箱跑；长任务（补数/回补/run_compute/backfill/大数据 EDA/写库/拉 tushare）给 .py 脚本由作者本地 cmd 跑，贴回日志。拿不准当长任务处理（H1）。
 
-### 0.2 协作效率 Tips（给作者：从数据分析师到软件工程师）
+### 0.2 协作效率 Tips → 已收口到项目规则
 
-> 你的数据分析直觉是一流资产，但这些工程习惯能让我们少走 80% 弯路：
-
-| # | Tip | 为什么 | 怎么做 |
-|---|---|---|---|
-| 1 | **小步验证，不要一股脑改完才跑** | 改 10 行 → 跑了报错 → 不知道哪行炸 | 改一处 → 跑一次 → 确认 OK → 改下一处。1 个交易日 → 1 个月 → 1 年 |
-| 2 | **mock 先于真实数据** | 连库跑一次几分钟，mock 秒级 | pandas 语法：用 5 行 DataFrame 验证 merge/pivot/asof，通了再上库 |
-| 3 | **改数据前先看 schema** | 表里缺列 → `net_mf_vol` 报错 → 白跑 | `SELECT COUNT(*) FROM table`、看 `output_schema`、确认列对齐 |
-| 4 | **日志是眼睛** | 没日志 = 盲跑，不知道卡在哪步 | 长流程每个 join 加 `[n/8] join xxx...` + 行数 + 耗时 |
-| 5 | **幂等是好朋友** | 跑崩了能重跑，不丢数据 | overwrite + partition_col，重跑 = 删该分区 + 重写 |
-| 6 | **一次改一个模块** | 改三处 → 三处都炸 → 不知道谁炸 | 改完 stock_daily_panel 验证 OK 再动别的 |
-| 7 | **读完再改** | 凭记忆改代码 = 50% 概率改错位置 | 每次改之前 `Read` 当前代码，确认上下文 |
-| 8 | **错误信息 = 路标** | 报错里文件名+行号+错误类型直接告诉你答案 | 读 traceback 从底向上：最后一行的错误类型 → 往前找自己的代码 |
-
-**对我们协作的影响**：
-- 我每次给命令，你跑完贴日志，我分析 → 这是"异步协作"的正常节奏，不低效。
-- 但如果一次性给我 3 步任务、没验证、没日志，我猜错概率翻 3 倍。
-- **最理想的节奏**：你提 1 个明确需求 → 我改 1 个模块 → 你跑 1 条命令验证 → 确认再下一步。
+> 原 8 条 Tips（小步验证 / mock 先于真实数据 / 改前看 schema / 日志是眼睛 / 幂等 / 一次一个模块 / 读完再改 / 错误信息=路标）已按 Loop Engineering 五移动 + harness 约束收口到 `.trae/rules/nanoquant_loop.md`：
+> - mock-first / 小步验证 / 一次一个模块 → Loop 1-3 的「移交」「验证」门
+> - 改前看 schema / 读完再改 → H9 改前必读
+> - 日志是眼睛 → H10
+> - 错误信息=路标 → H11
+> - 幂等 → Loop「持久」+ overwrite 幂等
+>
+> **最理想节奏**：1 个明确需求 → AI 改 1 个模块 → 作者跑 1 条命令验证 → 确认再下一步（项目规则 §6）。
 
 ***
 
@@ -490,6 +483,8 @@ df = fetch_tushare(
 ## 7. 踩过的坑（Pitfalls）
 
 > 每个坑都曾导致过 pipeline 崩溃或数据错误。动手前务必过一遍。
+>
+> **本节是具体 bug 目录（catalog）**：记录每个坑的现象/根因/修复。坑背后的**工程实践**（mock-first、沙箱跑 Python 按风险分档、禁 emoji、DOUBLE 不 DECIMAL、去重不静默等）已收口为硬规则在 `.trae/rules/nanoquant_loop.md`（H1-H12 + Loop 验证门）；本节保留具体 bug 细节供回溯。
 
 ### 7.1 NaN→None 破坏数值 dtype
 
@@ -589,16 +584,18 @@ pd.merge_asof(left_sorted, right_sorted, on='trade_date_dt', by='ts_code', direc
 
 跑通后再上真实数据。**切忌每改一行就重跑完整 pipeline。**
 
-### 7.14 Trae 沙箱不可靠 — 不跑 Python，交给作者本地 cmd ⚠️
+### 7.14 Trae 沙箱边界 — 按风险分档（对应项目规则 H1）
 
-**Trae 内置沙箱有严重问题**：PowerShell 引号转义异常、中文输出截断、进程被随机 `Ctrl+C` 杀死（exit code `-1073741510`）、`run_compute` 等长时间任务的输出完全丢失。
+**Trae 内置沙箱有四类硬伤**：PowerShell 引号转义异常、中文输出截断、进程被随机 `Ctrl+C` 杀死（exit code `-1073741510`）、`run_compute` 等长时间任务的输出完全丢失。长任务必踩，快速只读脚本踩不到。
 
-**原则**：
-- **AI Agent 不在沙箱里跑任何 Python 脚本**（包括 EDA、补数、`run_compute`、`backfill`）。只给命令，让作者在本地 cmd 执行。
+**分档**（项目规则 H1 为准）：
+- ✅ **可直接沙箱跑**：快/短/只读/ASCII 输出——`SELECT COUNT(*)`、列对齐、行数/null 统计、5-10 行 mock DataFrame 语法试跑、pandas 逻辑验证。
+- ❌ **必须给 .py 脚本由作者本地 cmd 跑**：补数/回补/`run_compute`/`backfill`/大数据 EDA/任何写库/任何拉 tushare（耗时长+撞限频+花钱不可逆）。
 - **Python 语法/逻辑调试一律用 mock DataFrame**（见 §7.13），不连数据库。
-- 沙箱仅用于：`pip install`、`git` 操作、`Get-ChildItem` 等简单 shell 命令。
+- 沙箱另可用于：`pip install`、`git`、`Get-ChildItem` 等简单 shell。
+- **拿不准 → 当长任务处理（给本地）**。
 
-**正确做法**：Agent 给出命令 → 作者本地 cmd 跑 → 作者贴回日志/结果 → Agent 分析。
+**正确做法**：长任务 → Agent 给 .py/命令 → 作者本地 cmd 跑 → 作者贴回日志/结果 → Agent 分析。
 
 ### 7.15 PowerShell / 命令行 常见坑
 

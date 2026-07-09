@@ -3,6 +3,8 @@
 > 给 AI Agent：本文件是 nanoquant 的架构地图、最高原则、核心约定。**每次新会话必读全部。**
 > 具体 API 速查、踩坑集、策略层代码见 `DEV_GUIDE.md`。
 > 项目进度见 `ROADMAP.md`，脚本命令见 `README.md`，tushare 接口细节见 `TUSHARE_API_GUIDE.md`。
+>
+> **工程硬规则（harness 约束 + 三层 loop 验证门 + 协作节奏）的单一事实源是 `.trae/rules/nanoquant_loop.md` 项目规则**（AI 始终生效）。本文件只保留架构地图与业务原则，不重复硬规则；冲突时以项目规则为准。Loop Engineering 方法论见 `LOOP_ENGINEERING.md`。
 
 ═══════════════════════════════════════════════════════════════
 ## 最高原则（每条都是硬约束，不是建议）
@@ -69,6 +71,8 @@
 | 文档 | 何时读 | 内容 |
 |------|--------|------|
 | **本文件** | 每次新会话 | 架构地图、最高原则、核心约定 |
+| `.trae/rules/nanoquant_loop.md` | **始终生效**（Trae 项目规则，自动加载） | **工程硬规则单一事实源**：harness 约束 H1-H12 + Ingest/Compute/Strategy 三层 loop 验证门 + 协作节奏 |
+| `LOOP_ENGINEERING.md` | 设计新 loop / 想理解规则背后的方法论时 | Loop Engineering 四层栈/五移动/生成器-评估器分离/新 loop 准入清单 |
 | `ROADMAP.md` | **开发前必开** — 确认进度/缺口 | 缺口清单、各阶段完成度 |
 | `DEV_GUIDE.md` | **开发前必开 §7** — 踩坑集；写代码时翻其他章节 | 模块 API 速查、write_mode、增量策略、新 Calculator 模板、**所有踩过的坑** |
 | `TUSHARE_API_GUIDE.md` | **改/加 tushare 接口时必开** | 接口字段、参数、取数逻辑 |
@@ -205,37 +209,28 @@ python scripts/run_compute.py   # 加工层增量计算
 
 ---
 
-## 6. 约定与硬约束
+## 6. 架构约定（工程硬规则见项目规则）
 
-### 6.1 约定（必须遵守）
+> **工程硬规则（harness 约束 H1-H12、三层 loop 验证门、协作节奏）的单一事实源是 `.trae/rules/nanoquant_loop.md`**。本节只保留**架构级**约定（为什么这么分层），不重复硬规则。
+
+### 6.1 架构级约定（设计决策，非工程细节）
 
 | 事项 | 约定 |
 |------|------|
 | 语言 | Python 3.11+（推荐 3.14） |
-| 数据源 | tushare 为主，不用 akshare。开发期用 MCP 探查字段 |
+| 数据源 | tushare 为主，不用 akshare |
 | 存储 | MySQL 8.x+，库名 `stock`，SQLAlchemy 2.x + pymysql |
 | 计算结构 | 一律 `BaseCalculator` 子类，统一 `update(start_date, end_date, **params)` |
-| Schema | schema-as-code：接入层自动推断，加工层手写 `output_schema` |
-| 增量 | 四类策略（trade_date / period / ex_date / full_refresh），biz_date 抽象 |
-| 日期 | 统一 `yyyymmdd` 字符串，入库转 DATE；**加工层统一 yyyy-mm-dd 字符串**，内部不互转 |
-| 路径 | `Path(__file__)` 相对定位，不出现绝对路径 |
-| 依赖 | `requirements.txt` 用 `>=,<` 范围，不锁 `==` |
-| 分区 | 不做（数据量未到） |
-| 注释 | **指标列必须注释物理意义**（回答什么具体问题 + 公式来源） |
-| Docker | 不做（云迁移由 `os.getenv` 覆盖） |
+| 配置 | 密钥走 `.env`，`os.getenv` 默认值留空 |
 
-### 6.2 硬约束
+### 6.2 架构级硬约束（分层与抽象）
 
 1. **接入层与加工层解耦**：`data/etl/` 只放 tushare 1:1 复刻，`data/panel+factor+label/` 只放自定义计算。
 2. **加工层用 panel 抽象**：panel / factor / label 三目录，粒度用表名前缀标。
 3. **统一 `update`**：不传=增量、传=回补。
 4. **biz_date 抽象**：频率不进 `update` 签名（调度频率走 schedule，数据频率走 get_data）。
-5. **新计算 = Calculator 子类**，落库走 `save_to_database`，幂等靠 `write_mode`。
-6. **schema-as-code**：接入层自动推断，加工层手写。数值列统一 DOUBLE（不用 DECIMAL）。
-7. **tushare API 以 MCP 为主**：开发期用 MCP 探查字段。
-8. **四类增量**：by_trade_date / by_period / by_ex_date / full_refresh。废弃 upsert。
-9. **配置走 `.env`**：密钥 `os.getenv` 默认值留空。
-10. **改动小而可回滚**：一次一个模块。
+
+> 其余硬规则（schema-as-code 细则、四类增量、DOUBLE/字符串两档、日期格式、路径、依赖、分区、Docker、MCP 探查、改动小可回滚、沙箱/emoji/日志/根因等 harness 约束，以及 Ingest/Compute/Strategy 三层 loop 的验证门）**全部见 `.trae/rules/nanoquant_loop.md`**。
 
 ---
 
@@ -274,10 +269,4 @@ python scripts/run_compute.py   # 加工层增量计算
 
 2. **按情境给方法论建议。** 切合作者"个人量化"（无团队、不定期开机、无考核压力）的背景，在合适的时机给出工作方法论上的指导意见——按需、点到为止。
 
-3. **主动提醒工程最佳实践（硬约束）。** 作者是数据分析专业出身，软件开发经验尚浅。Agent 在以下场景**必须主动提醒、不怕反驳**：
-   - 作者直接要求"跑全量/跑一年" → 提醒先跑 1 天验证，渐进扩范围
-   - 作者要求"改多个文件一起跑" → 提醒一次改一个模块，验证再下一步
-   - 改 pandas/SQL 语法但没先 mock → 提醒用 5 行 DataFrame 验证
-   - 脚本缺乏日志/进度标记 → 提醒加 `[n/N]` 步骤日志
-   - 遇到报错作者想跳过而非排查 → 坚持排查根因，不留坑
-   - **提醒格式**：简短有力，如"先跑 1 天验证再扩月度，不然炸了不知道哪步"。
+3. **主动提醒工程最佳实践（硬约束）。** 作者是数据分析专业出身，软件开发经验尚浅。Agent 在"跑全量/改多文件/没先 mock/缺日志/想跳过报错"等场景**必须主动提醒、不怕反驳**——具体场景清单与提醒格式见 `.trae/rules/nanoquant_loop.md` §6 协作节奏（harness 约束 H9-H12 + §6）。提醒格式简短有力，如"先跑 1 天验证再扩月度，不然炸了不知道哪步"。
