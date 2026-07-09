@@ -63,10 +63,11 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
     primary_keys = ["trade_date", "dimension_type", "dimension_value"]
     biz_date_col = "trade_date"
     write_mode = "overwrite"
-    partition_col = "trade_date"  # 按月覆盖（同月末删除所有dimension行再批量写入）
+    partition_col = "trade_month"  # 按年月覆盖（MTD→月末重算自动清旧行，同一月只保留最新）
 
     output_schema = {
         "trade_date": "string",
+        "trade_month": "string",  # yyyy-mm，用作 partition_col（确保同月 MTD→月末覆盖）
         "dimension_type": "string",
         "dimension_value": "string",
 
@@ -173,14 +174,26 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
 
     @staticmethod
     def _monthly_trade_dates(engine, start_date: str, end_date: str) -> list[str]:
-        """区间内每月最后交易日列表（yyyy-mm-dd 字符串）。"""
-        from core.dates import get_monthly_last_tradedate
+        """区间内每月最后交易日列表（yyyy-mm-dd 字符串）。
+        
+        月中运行时，当月用 end_date 作为 MTD 月末（下次月末重算时同月自动覆盖）。
+        """
+        from core.dates import get_monthly_last_tradedate, get_trade_dates_between
         sy, ey = int(start_date[:4]), int(end_date[:4])
         result = []
+        # 历史完整月份：取每月最后一个交易日
         for d in get_monthly_last_tradedate(engine, sy, ey):
             if start_date[:6] <= d[:6] <= end_date[:6]:
                 result.append(f"{d[:4]}-{d[4:6]}-{d[6:8]}")
-        return result
+        # MTD：end_date 所在月如果没有月末交易日（月未结束），用 end_date 当月的最新交易日
+        end_ym = end_date[:6]
+        if end_ym not in {d[:7] for d in result}:
+            # 取 end_date 所在月已发生的最新交易日
+            trading_days = get_trade_dates_between(engine, end_ym + "01", end_date, asc=False)
+            if trading_days:
+                last_td = trading_days[0]  # 最新交易日
+                result.append(f"{last_td[:4]}-{last_td[4:6]}-{last_td[6:8]}")
+        return sorted(result)
 
     @staticmethod
     def _isin_month(dates: pd.Series, year_month: str) -> pd.Series:
@@ -227,6 +240,21 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
                 hsgt.loc[new_unit_mask, "north_money"] / cls.NORTH_MONEY_SCALE
             )
         return hsgt
+
+    def _migrate_trade_month(self):
+        """一次性迁移：旧数据（partition_col 从 trade_date 改为 trade_month）补列值。"""
+        from config.database import execute_sql
+        try:
+            rows = execute_sql(
+                f"UPDATE {self.table_name} SET trade_month = LEFT(trade_date, 7) "
+                f"WHERE trade_month IS NULL OR trade_month = ''",
+                self.engine,
+            )
+            if rows and rows > 0:
+                self.logger.info(f"trade_month 迁移：更新 {rows} 行旧数据")
+        except Exception:
+            # 列不存在（首次建表）→ 忽略
+            pass
 
     # ================================================================
     # get_data：上游取数
@@ -339,6 +367,9 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         except (KeyError, IndexError):
             self.logger.warning("取数结果为空，跳过计算")
             return pd.DataFrame()
+
+        # 一次性迁移：旧数据 trade_month=NULL → 补上前7位
+        self._migrate_trade_month()
 
         idx_all      = upstream["idx"]
         psd          = upstream["psd"]
@@ -454,6 +485,8 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         if not rows:
             return pd.DataFrame()
         result = pd.DataFrame(rows)
+        # trade_month: yyyy-mm 格式，partition_col 使用此列（确保同月 MTD→月末覆盖）
+        result["trade_month"] = result["trade_date"].str[:7]
         col_order = [c for c in self.output_schema if c in result.columns]
         return result[col_order]
 
