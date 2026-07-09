@@ -616,6 +616,41 @@ pd.merge_asof(left_sorted, right_sorted, on='trade_date_dt', by='ts_code', direc
 
 ***
 
+### 7.17 `astype(int)` 爆炸：NaN 不能直接转整数
+
+**症状**：
+```
+pandas.errors.IntCastingNaNError: Cannot convert non-finite values (NA or inf) to integer
+```
+发生在 `df.astype(int)` 或 `.dt.days.astype(int)` 等位置。
+
+**根因**：pandas 的 `Int64` 可存 NaN，但 numpy `int64` 不行。`.astype(int)` 走 numpy 路径，遇到 NaN 就炸。
+
+**修复模板**：
+```python
+# ❌ 不能：NaN + astype(int)
+df["col"] = some_calc.astype(int)
+
+# ✅ 修复：先 fillna 再转
+df["col"] = some_calc.fillna(-1).astype(int)  # 用 -1 标记缺失
+
+# ❌ 不能：bool 序列含 NaN 直接 astype(int)
+df["is_x"] = (condition).astype(int)
+
+# ✅ 修复：.fillna(False) 先
+df["is_x"] = (condition).fillna(False).astype(int)
+```
+
+**常见触发场景**：
+- `.dt.days` 从 NaT 算出差值 → NaN
+- `np.where(cond, 1, 0)` 当 cond 含 NaN → NaN
+- groupby 操作后某些组无数据 → NaN
+- 两 DataFrame merge 后右表缺行 → NaN
+
+**验证门**：任何写新 Calculator 或新增整数列时，**必须**确保 `output_schema` 声明的 `"int"` 列在最终 DataFrame 中不含 NaN。最稳妥的做法是全程 `.fillna(-1)` 或 `.fillna(0)`。
+
+***
+
 ## 8. 开放问题（遇到时询问作者）
 
 1. **ETF 池范围**：`DEFAULT_ETF_POOL` 是默认值，作者可调整。

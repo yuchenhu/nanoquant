@@ -375,15 +375,15 @@ class FundDailyPanelCalculator(PanelCalculator):
         )
 
         # 上市天数（calendar day count from list_date to trade_date）
-        df["list_date"] = df["list_date"].astype(str)
         df["trade_date_dt"] = pd.to_datetime(df["trade_date"])
         df["list_date_dt"] = pd.to_datetime(df["list_date"], errors="coerce")
-        df["list_days"] = (df["trade_date_dt"] - df["list_date_dt"]).dt.days.astype(int)
+        delta = (df["trade_date_dt"] - df["list_date_dt"]).dt.days
+        df["list_days"] = delta.fillna(-1).astype(int)  # list_date 缺失 → -1
 
         # 停牌标记（vol=0 且 pct_chg=0 → 停牌）
         df["is_suspend"] = (
             (df["vol"].fillna(-1) == 0) & (df["pct_chg"].fillna(-999) == 0)
-        ).astype(int)
+        ).fillna(False).astype(int)
 
         # 清理临时列
         df.drop(columns=["trade_date_dt", "list_date_dt"], inplace=True, errors="ignore")
