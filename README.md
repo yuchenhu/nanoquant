@@ -40,15 +40,29 @@ python scripts/00_init_database.py
 
 ```bash
 # 接入层：拉 tushare → MySQL（日常增量，从水位补到今天）
-python scripts/sync.py
-# 补数详细用法见 scripts/README_sync.md
+scripts\py.bat scripts\run_ingest.py
 
-# 加工层：panel → factor → label（按依赖顺序）
-python scripts/run_compute.py
+# 加工层：panel → factor → label（按拓扑依赖顺序，严格模式）
+scripts\py.bat scripts\run_compute.py
+```
 
-# 策略层：回测 / 生成调仓信号
-python scripts/run_strategy.py --mode backtest --start 20240101 --end 20241231
-python scripts/run_strategy.py --mode signal
+### 5. 加工层常用操作
+
+```bash
+# 全量跑（自动从水位续跑，日常增量首选）
+scripts\py.bat scripts\run_compute.py
+
+# 回补指定区间
+scripts\py.bat scripts\run_compute.py --start 20200101 --end 20201231
+
+# 跑指定任务 + 其上游依赖（改变更后全链路补）
+scripts\py.bat scripts\run_compute.py --start 20260601 --only panel:market_sentiment_monthly
+
+# 只跑指定任务，不展开依赖（上游已就绪的最快路径）
+scripts\py.bat scripts\run_compute.py --start 20260601 --solo panel:market_sentiment_monthly
+
+# 列出所有任务 + 拓扑依赖链
+scripts\py.bat scripts\run_compute.py --list
 ```
 
 ## 入口脚本总览
@@ -57,28 +71,27 @@ python scripts/run_strategy.py --mode signal
 |------|------|---------|------|
 | `scripts/00_init_database.py` | 建库建表 + 水位表 | `python scripts/00_init_database.py` | 一次性 |
 | `scripts/sync.py` | **接入层拉数主入口**（增量+回补，见 README_sync.md） | `python scripts/sync.py` | 日常/开机 |
-| `scripts/run_ingest.py` | 接入层底层入口（sync 内部复用，也可单独调） | `python scripts/run_ingest.py --only daily` | 按需 |
-| `scripts/run_compute.py` | 加工层（panel→factor→label） | `python scripts/run_compute.py` | 数据更新后 |
-| `scripts/run_strategy.py` | 策略层（回测/信号） | `python scripts/run_strategy.py --mode signal` | 按需 |
-| `scripts/verify_schedule.py` | 校验接入层调度配置（class/依赖/拓扑） | `python scripts/verify_schedule.py` | 改调度后 |
-| `scripts/verify_compute.py` | 校验加工层调度配置 | `python scripts/verify_compute.py` | 改调度后 |
-| `scripts/daily_task.bat` | Windows 定时任务模板（拉数+加工） | 任务计划调用 | 可选定时 |
+| `scripts/run_ingest.py` | **接入层拉数主入口**（增量+回补） | `scripts\py.bat scripts\run_ingest.py` | 日常/开机 |
+| `scripts/run_compute.py` | **加工层（panel→factor→label）拓扑依赖** | `scripts\py.bat scripts\run_compute.py` | 数据更新后 |
+| `scripts/sync.py` | 接入层旧入口（内部调 run_ingest） | `python scripts/sync.py` | 兼容保留 |
 
 ### 典型工作流
 
 ```bash
 # 【日常】开机更新到今天
-python scripts/sync.py            # 1. 接入层补数
-python scripts/run_compute.py     # 2. 加工层重算
-python scripts/run_strategy.py --mode signal   # 3. 生成最新调仓信号
+scripts\py.bat scripts\run_ingest.py               # 1. 接入层补数
+scripts\py.bat scripts\run_compute.py               # 2. 加工层全量（拓扑排序，安全）
 
-# 【首次/回补历史】逐年灌数（见 scripts/README_sync.md 第 3 节）
-python scripts/00_init_database.py
-python scripts/sync.py --only trade_cal
-python scripts/sync.py --only stock_basic,index_basic,index_classify,index_member_all,fund_basic
-python scripts/sync.py --start 20100101 --end 20101231 --exclude trade_cal,stock_basic,index_basic,index_classify,index_member_all,fund_basic
-# ... 逐年到今年 ...
-python scripts/run_compute.py --start 20100101 --end 20251231   # 加工层一次性回补
+# 【单表重算】改了一个 compute 表，连带上游一起补
+scripts\py.bat scripts\run_compute.py --start 20260601 --only panel:xxx
+
+# 【单表快速补】上游刚补完，只跑自己
+scripts\py.bat scripts\run_compute.py --start 20260601 --solo panel:xxx
+
+# 【market_sentiment 月中更新】上月全覆盖 + 当月 MTD
+scripts\py.bat scripts\run_ingest.py
+scripts\py.bat scripts\run_compute.py                                # 增量上游
+scripts\py.bat scripts\run_compute.py --start 20260601 --end 20260709 --solo panel:market_sentiment_monthly
 ```
 
 > **定时任务（可选）**：本地不定期开机用 `sync.py` 手动跑即可，无需配调度。
