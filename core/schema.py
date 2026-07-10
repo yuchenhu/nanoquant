@@ -271,17 +271,18 @@ def evolve_schema(table_name: str, new_schema: Dict[str, str]) -> None:
     for col_name, col_type in new_schema.items():
         # 列名大小写不敏感比对（MySQL 默认不区分）
         actual_col = existing_lower.get(col_name.lower())
+        mysql_type = _normalize_col_type(col_name, col_type)
         if actual_col is None:
-            # 加列
-            ddl = f"ALTER TABLE `{table_name}` ADD COLUMN `{col_name}` {col_type} NULL"
+            # 加列（col_type 可能是简写 string/int/float，需转为 MySQL 原生类型）
+            ddl = f"ALTER TABLE `{table_name}` ADD COLUMN `{col_name}` {mysql_type} NULL"
             with engine.begin() as conn:
                 conn.execute(text(ddl))
-            logger.info(f"表 {table_name} 加列: {col_name} {col_type}")
-            _log_schema_change(table_name, "add_column", col_name, None, col_type)
+            logger.info(f"表 {table_name} 加列: {col_name} {mysql_type}")
+            _log_schema_change(table_name, "add_column", col_name, None, mysql_type)
         else:
             # 类型比对（简单子串匹配，避免 VARCHAR(50) vs VARCHAR(50) 的细节差异）
             existing_type = existing[actual_col].upper()
-            new_type_upper = col_type.upper()
+            new_type_upper = mysql_type.upper()
             if new_type_upper not in existing_type and existing_type not in new_type_upper:
                 logger.warning(
                     f"表 {table_name} 列 {col_name} 类型不一致: "
