@@ -4,17 +4,19 @@
      按 depends_on 拓扑排序后严格依序执行。
 
 用法：
-    # 全量跑所有加工层（拓扑排序，依赖先行）
+
+    # 全量跑（按拓扑排序，所有 panel → factor → label）
     python scripts/run_compute.py
 
-    # 指定 biz_date 区间
-    python scripts/run_compute.py --start 20240101 --end 20240131
-
-    # 只跑某一层（拓扑排序，但只包含该层任务 + 其传递依赖）
+    # 只跑某层（含传递依赖）
     python scripts/run_compute.py --layer panel
 
-    # 只跑指定 calculator（不使用拓扑排序，用户自行保证依赖）
+    # 跑指定任务 + 其上游（自动展开传递依赖，确保数据链路完整）
     python scripts/run_compute.py --only panel:stock_daily,factor:high_low_spread
+    python scripts/run_compute.py --start 20260601 --only panel:market_sentiment_monthly
+
+    # 只跑指定任务，不展开任何依赖（需自行确保上游已就绪）
+    python scripts/run_compute.py --start 20260601 --solo panel:market_sentiment_monthly
 
     # 列出所有可用 calculator
     python scripts/run_compute.py --list
@@ -58,6 +60,40 @@ def _load_schedule() -> List[dict]:
             task["_section"] = section
             tasks.append(task)
     return tasks
+
+
+def _parse_only_ids(only: List[str], tasks: List[dict]) -> Optional[Set[str]]:
+    """解析 --only/--solo 参数，映射到 task_id 集合。"""
+    only_ids = set()
+    for item in only:
+        parts = item.split(":", 1)
+        if len(parts) == 2:
+            l, name = parts
+            matched = False
+            for t in tasks:
+                layer_prefix = t["class"].split(".")[1]  # "data.panel.xxx" → "panel"
+                class_name = t["class"].rsplit(".", 1)[-1]
+                if t["task_id"] == name or t["task_id"] == f"{name}_panel" or \
+                   f"{l}:{name}" == f"{layer_prefix}:{t['task_id']}":
+                    only_ids.add(t["task_id"])
+                    matched = True
+                    break
+                cls_lower = class_name.lower()
+                if name.lower() in cls_lower and l in t["class"]:
+                    only_ids.add(t["task_id"])
+                    matched = True
+                    break
+            if not matched:
+                logger.warning("--only/--solo 未匹配到任务: %s", item)
+        else:
+            if item in {t["task_id"] for t in tasks}:
+                only_ids.add(item)
+            else:
+                logger.warning("--only/--solo 未匹配到 task_id: %s", item)
+    if not only_ids:
+        logger.error("--only/--solo 未匹配到任何任务")
+        return None
+    return only_ids
 
 
 def _topological_sort(
@@ -184,69 +220,47 @@ def run_compute(
     end_date: Optional[str] = None,
     layer: Optional[str] = None,
     only: Optional[List[str]] = None,
+    solo: Optional[List[str]] = None,
     no_topology: bool = False,
 ) -> int:
-    """运行加工层计算。"""
+    """运行加工层计算。
+
+    - only: 跑指定任务 + 展开传递依赖（上游未就绪也能安全补）
+    - solo: 只跑指定任务，不展开任何依赖（上游已就绪的最快路径）
+    """
     tasks = _load_schedule()
     if not tasks:
         logger.error("schedule_compute.json 为空，无法运行")
         return 1
 
-    # 解析 --only
+    # 解析 --only / --solo → task_id 集合
     only_ids: Optional[Set[str]] = None
+    solo_ids: Optional[Set[str]] = None
     if only:
-        # --only 格式: panel:stock_daily,factor:high_low_spread
-        #   → 需要映射到 task_id。遍历 schedule 找 layer:name 匹配。
-        only_ids = set()
-        for item in only:
-            parts = item.split(":", 1)
-            if len(parts) == 2:
-                l, name = parts
-                matched = False
-                for t in tasks:
-                    layer_prefix = t["class"].split(".")[1]  # "data.panel.xxx" → "panel"
-                    class_name = t["class"].rsplit(".", 1)[-1]
-                    # 尝试多种匹配方式
-                    if t["task_id"] == name or t["task_id"] == f"{name}_panel" or \
-                       f"{l}:{name}" == f"{layer_prefix}:{t['task_id']}":
-                        only_ids.add(t["task_id"])
-                        matched = True
-                        break
-                    # 宽松匹配：类名包含关键词
-                    cls_lower = class_name.lower()
-                    if name.lower() in cls_lower:
-                        # 再验证 layer
-                        cls_module = t["class"]
-                        if l in cls_module:
-                            only_ids.add(t["task_id"])
-                            matched = True
-                            break
-                if not matched:
-                    logger.warning("--only 未匹配到任务: %s", item)
-            else:
-                # 直接按 task_id 匹配
-                if item in {t["task_id"] for t in tasks}:
-                    only_ids.add(item)
-                else:
-                    logger.warning("--only 未匹配到 task_id: %s", item)
+        only_ids = _parse_only_ids(only, tasks)
         if not only_ids:
-            logger.error("--only 未匹配到任何任务")
             return 1
-        # --only 模式不使用拓扑排序（除非显式要求）
-        if not no_topology:
-            no_topology = True
-            logger.info("--only 模式：不强制拓扑排序，请自行保证依赖顺序")
+    if solo:
+        solo_ids = _parse_only_ids(solo, tasks)
+        if not solo_ids:
+            return 1
 
     # 拓扑排序
-    if no_topology or only_ids:
-        # --only 或无拓扑模式：保持用户指定顺序，但展开传递依赖
+    if solo_ids:
+        # --solo：只跑指定任务，不展开依赖
+        ordered_tasks = [t for t in tasks if t["task_id"] in solo_ids]
+        logger.info("--solo 模式：仅运行指定任务，不展开依赖（请自行确保上游就绪）")
+    elif only_ids:
+        # --only：展开传递依赖
         ordered_tasks = _topological_sort(tasks, only_ids=only_ids, layer_filter=None)
-        if only_ids:
-            # 拓扑排序后，保持 only_ids 的顺序在前
-            dep_only = set(t["task_id"] for t in ordered_tasks)
-            auto_deps = dep_only - only_ids
-            if auto_deps:
-                logger.info("自动加入传递依赖: %s", auto_deps)
+        dep_only = set(t["task_id"] for t in ordered_tasks)
+        auto_deps = dep_only - only_ids
+        if auto_deps:
+            logger.info("--only 模式：自动展开传递依赖 %s", auto_deps)
+        else:
+            logger.info("--only 模式：指定任务无额外传递依赖")
+    elif no_topology:
+        ordered_tasks = _topological_sort(tasks, only_ids=None, layer_filter=None)
     else:
         ordered_tasks = _topological_sort(
             tasks, only_ids=None, layer_filter=layer
@@ -314,7 +328,9 @@ def main() -> int:
     parser.add_argument("--layer", type=str, choices=["panel", "factor", "label"],
                         help="只跑某一层（拓扑排序，含传递依赖）")
     parser.add_argument("--only", type=str,
-                        help="只跑指定 calculator（逗号分隔，格式 layer:name，如 panel:stock_daily）")
+                        help="跑指定任务 + 展开传递依赖（格式 layer:name，逗号分隔）")
+    parser.add_argument("--solo", type=str,
+                        help="只跑指定任务，不展开依赖（格式 layer:name，逗号分隔）")
     parser.add_argument("--no-topology", action="store_true",
                         help="关闭拓扑排序（与 --only 联用时默认关闭）")
     parser.add_argument("--list", action="store_true", help="列出所有可用 calculator 后退出")
@@ -325,12 +341,14 @@ def main() -> int:
         return 0
 
     only = args.only.split(",") if args.only else None
+    solo = args.solo.split(",") if args.solo else None
 
     return run_compute(
         start_date=args.start,
         end_date=args.end,
         layer=args.layer,
         only=only,
+        solo=solo,
         no_topology=args.no_topology,
     )
 
