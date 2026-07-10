@@ -5,7 +5,7 @@
       "task_id": "stock_daily_panel",
       "class": "data.panel.stock_daily_panel.StockDailyPanelCalculator",
       "description": "个股×日 行情宽表（行情+复权+市值+ST+行业+指数成分）",
-      "depends_on": ["daily", "adj_factor", "daily_basic", "stock_st", "index_member_all"]
+      "depends_on": ["daily", "adj_factor", "daily_basic", "stock_st", "index_member_all", "index_membership_monthly"]
     },
     {
       "task_id": "index_membership_monthly",
@@ -79,7 +79,7 @@
       "task_id": "fin_statement_panel",
       "class": "data.panel.financial_statements_snapshot.FinancialStatementsSnapshotCalculator",
       "description": "个股×月 财务三表快照（snapshot_date=月末，PIT不穿越）",
-      "depends_on": ["income", "balancesheet", "cashflow"]
+      "depends_on": ["income", "balancesheet", "cashflow", "mv_monthly"]
     },
     {
       "task_id": "fin_indicator_snapshot",
@@ -103,7 +103,7 @@
       "task_id": "stock_mv_monthly",
       "class": "data.panel.mv_monthly.MvMonthlyCalculator",
       "description": "个股×月 市值",
-      "depends_on": ["stock_daily_panel"]
+      "depends_on": ["stock_daily_basic"]
     }
   ]
 }
