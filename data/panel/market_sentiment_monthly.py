@@ -189,7 +189,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         end_ym = end_date[:6]
         if end_ym not in {d[:7] for d in result}:
             # 取 end_date 所在月已发生的最新交易日
-            trading_days = get_trade_dates_between(engine, end_ym + "01", end_date)
+            trading_days = get_trade_dates_between(end_ym + "01", end_date)
             if trading_days:
                 last_td = trading_days[-1]  # 最新交易日（升序最后一员）
                 result.append(f"{last_td[:4]}-{last_td[4:6]}-{last_td[6:8]}")
