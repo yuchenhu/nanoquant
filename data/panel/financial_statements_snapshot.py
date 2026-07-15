@@ -290,7 +290,7 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         mv_df = data.get('mv').copy()
 
         disclosure_df['end_date'] = pd.to_datetime(disclosure_df['end_date'])
-        disclosure_df['report_type'] = disclosure_df['end_date'].dt.month.map({3: 1, 6: 2, 9: 3, 12: 4})
+        disclosure_df['report_type'] = disclosure_df['end_date'].dt.month.map({3: 1, 6: 2, 9: 3, 12: 4}).fillna(0).astype(int)
 
         bs_df = bs_df.rename(columns={'f_ann_date': 'bs_f_ann_date'})
         result_df = pd.merge(
@@ -385,4 +385,6 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         # 跨表
         df['ev'] = df['total_mv'] + df['interest_bearing_liab'].fillna(0) - df['cash_assets'].fillna(0)
         df['evnoa'] = df['ev'] - df['non_operating_assets'] - df['non_operating_liab']
+        # 清理 inf/NaN（上游 tushare 数据可能含 inf，save_to_database 会炸）
+        df = df.replace([np.inf, -np.inf], np.nan)
         return df
