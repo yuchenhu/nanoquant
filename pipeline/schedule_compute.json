@@ -1,0 +1,109 @@
+{
+  "_comment": "加工层调度配置（data/panel+factor+label/ 的 Calculator）。frequency=调度频率。class 路径在 Step 6/7 迁移后生效（data/sql → data/panel，data/factor+label 迁到新 BaseCalculator）。",
+  "daily": [
+    {
+      "task_id": "stock_daily_panel",
+      "class": "data.panel.stock_daily_panel.StockDailyPanelCalculator",
+      "description": "个股×日 行情宽表（行情+复权+市值+ST+行业+指数成分）",
+      "depends_on": ["daily", "adj_factor", "daily_basic", "stock_st", "index_member_all", "index_membership_monthly"]
+    },
+    {
+      "task_id": "index_membership_monthly",
+      "class": "data.panel.index_membership_monthly.IndexMembershipMonthlyCalculator",
+      "description": "月末指数成分归属（清洗 index_weight：去重/归一/前向填充，全量 universe 指数）",
+      "depends_on": ["index_weight"]
+    },
+    {
+      "task_id": "fund_daily_panel",
+      "class": "data.panel.fund_daily_panel.FundDailyPanelCalculator",
+      "description": "ETF×日 行情宽表（行情+复权+净值+份额+行业/风格/大类维度标签）",
+      "depends_on": ["fund_basic", "fund_daily", "fund_adj", "fund_nav", "fund_share"]
+    },
+    {
+      "task_id": "market_sentiment_daily",
+      "class": "data.panel.market_sentiment_daily.MarketSentimentDailyCalculator",
+      "description": "市场×日 情绪",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "stock_percentiles",
+      "class": "data.panel.stock_percentiles.StockPercentilesCalculator",
+      "description": "个股×日 历史百分位（窗口统计量）",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "factor_price_volume_20d",
+      "class": "data.factor.price_volume_20d.PriceVolume20DCalculator",
+      "description": "价量动量因子（20日）",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "factor_high_low_spread",
+      "class": "data.factor.high_low_spread.HighLowSpreadCalculator",
+      "description": "高低价差因子",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "factor_industry_resonance",
+      "class": "data.factor.industry_resonance.IndustryResonanceCalculator",
+      "description": "行业共振因子",
+      "depends_on": ["stock_daily_panel", "sw_daily"]
+    },
+    {
+      "task_id": "factor_moneyflow_imbalance",
+      "class": "data.factor.moneyflow_imbalance.MoneyFlowImbalanceCalculator",
+      "description": "资金流不平衡因子",
+      "depends_on": ["stock_daily_panel", "moneyflow"]
+    },
+    {
+      "task_id": "factor_trader_structure",
+      "class": "data.factor.trader_structure.TraderStructureCalculator",
+      "description": "交易者结构因子",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "label_forward_returns",
+      "class": "data.label.forward_returns.ForwardReturnsCalculator",
+      "description": "未来 N 日收益率标签",
+      "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "panel_data_quality",
+      "class": "data.panel.data_quality.DataQualityCalculator",
+      "description": "数据质量监控：每数据源x每应有日期的实际行数（全量重算，殿后跑）",
+      "depends_on": []
+    }
+  ],
+  "monthly": [
+    {
+      "task_id": "fin_statement_panel",
+      "class": "data.panel.financial_statements_snapshot.FinancialStatementsSnapshotCalculator",
+      "description": "个股×月 财务三表快照（snapshot_date=月末，PIT不穿越）",
+      "depends_on": ["income", "balancesheet", "cashflow", "mv_monthly"]
+    },
+    {
+      "task_id": "fin_indicator_snapshot",
+      "class": "data.panel.financial_indicators_snapshot.FinancialIndicatorsSnapshotCalculator",
+      "description": "个股×月 财务指标快照（从三表派生比值/利润率/质量指标）",
+      "depends_on": ["fin_statement_panel"]
+    },
+    {
+      "task_id": "factor_valuation",
+      "class": "data.factor.valuation.ValuationCalculator",
+      "description": "估值因子（snapshot_date=月末，PIT 12 期全量叉乘）",
+      "depends_on": ["fin_indicator_snapshot"]
+    },
+    {
+      "task_id": "market_sentiment_monthly",
+      "class": "data.panel.market_sentiment_monthly.MarketSentimentMonthlyCalculator",
+      "description": "市场×月 情绪（五维度36列：价11+量6+波6+估值7+资金7，指数+成分双视角）",
+      "depends_on": ["stock_daily_panel", "index_daily", "moneyflow_hsgt", "margin", "limit_list_d"]
+    },
+    {
+      "task_id": "stock_mv_monthly",
+      "class": "data.panel.mv_monthly.MvMonthlyCalculator",
+      "description": "个股×月 市值",
+      "depends_on": ["stock_daily_basic"]
+    }
+  ]
+}

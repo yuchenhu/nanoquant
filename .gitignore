@@ -1,0 +1,39 @@
+# ===== 密钥 / 本地配置 =====
+.env
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+env/
+.userbase/
+
+# ===== 日志 =====
+logs/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+.DS_Store
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== 测试 / 覆盖率 =====
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== 临时文件 / EDA =====
+# 注意：不能用 _*.py，会误伤 __init__.py 和 scripts/_lint_consistency.py
+# 临时脚本请用 tmp_ 前缀（如 tmp_eda.py），或自行 git add -f 强制添加
+_*.txt
+tmp_*.py
