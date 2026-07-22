@@ -64,8 +64,8 @@
     {
       "task_id": "label_forward_returns",
       "class": "data.label.forward_returns.ForwardReturnsCalculator",
-      "description": "未来 N 日收益率标签",
-      "depends_on": ["stock_daily_panel"]
+      "description": "未来 N 日收益率标签（个股+ETF 统一，asset_type 列区分）",
+      "depends_on": ["stock_daily_panel", "fund_daily_panel"]
     },
     {
       "task_id": "panel_data_quality",

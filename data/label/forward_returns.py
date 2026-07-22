@@ -1,4 +1,4 @@
-"""未来 N 日收益率标签（个股维度）。
+"""未来 N 日收益率标签（个股 + ETF 统一）。
 
 表名：label_forward_returns（基类自动加 label_ 前缀）
 主键：ts_code + trade_date
@@ -6,7 +6,8 @@ biz_date_col：trade_date
 write_mode：overwrite
 partition_col：trade_date
 
-依赖：panel_stock_daily（个股 x 日 行情宽表，含 adj_factor + is_suspend）
+依赖：panel_stock_daily（个股） + panel_fund_daily（ETF，含 fund_adj 复权因子处理分红）
+asset_type 列区分：stock / etf
 
 ----
 设计决策（2026-07-22 重构）：
@@ -16,7 +17,7 @@ partition_col：trade_date
    T+1 买入（避免未来函数），持有 N 个交易日后 T+1+N 卖出。
 3. N in {1, 2, 3, 5, 10, 20, 40, 60}。
 4. 更新策略：每天回跑 T-61 ~ T，partition_col = trade_date，overwrite 覆盖。
-5. 个股 + 指数同一张表（ts_code 列区分），本次先实现个股，指数扩展只需在 get_data 加一路 UNION。
+5. 个股 + ETF 同一张表 + asset_type 列区分。以后加指数只需加一路 UNION。
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ class ForwardReturnsCalculator(LabelCalculator):
     output_schema = {
         "ts_code": "string",
         "trade_date": "date",
+        "asset_type": "string",
         "fwd_ret_1d": "float",
         "fwd_ret_2d": "float",
         "fwd_ret_3d": "float",
@@ -85,8 +87,9 @@ class ForwardReturnsCalculator(LabelCalculator):
         end_date: Optional[str] = None,
         **params: Any,
     ) -> pd.DataFrame:
-        """取 panel_stock_daily 数据，end_date 向前扩展 READ_BUFFER_TRADING_DAYS 个交易日。
+        """取 panel_stock_daily + panel_fund_daily 数据。
 
+        end_date 向前扩展 READ_BUFFER_TRADING_DAYS 个交易日以覆盖最远 horizon 的未来价格。
         start_date/end_date 可能是 YYYY-MM-DD 或 YYYYMMDD 格式。
         """
         if start_date:
@@ -101,19 +104,25 @@ class ForwardReturnsCalculator(LabelCalculator):
             else None
         )
 
-        query = """
-        SELECT
-            ts_code, trade_date, close, adj_factor, is_suspend
-        FROM panel_stock_daily
-        WHERE 1=1
-        """
+        date_clause = ""
         if start_date:
-            query += f" AND trade_date >= '{start_date}'"
+            date_clause += f" AND trade_date >= '{start_date}'"
         if read_end:
-            query += f" AND trade_date <= '{read_end}'"
+            date_clause += f" AND trade_date <= '{read_end}'"
+
+        query = f"""
+        SELECT ts_code, trade_date, close, adj_factor, is_suspend, 'stock' AS asset_type
+        FROM panel_stock_daily
+        WHERE 1=1 {date_clause}
+        UNION ALL
+        SELECT ts_code, trade_date, close, adj_factor, is_suspend, 'etf' AS asset_type
+        FROM panel_fund_daily
+        WHERE 1=1 {date_clause}
+        """
 
         self.logger.info(
-            f"取 panel_stock_daily: {start_date or '开始'}~{read_end or '结束'}"
+            f"取 panel_stock_daily + panel_fund_daily: "
+            f"{start_date or '开始'}~{read_end or '结束'}"
         )
         return pd.read_sql(query, self.engine)
 
@@ -171,6 +180,13 @@ class ForwardReturnsCalculator(LabelCalculator):
         df_full = df_full.reset_index()
 
         # ===== Step 3: pivot 为矩阵 =====
+        # 保存 asset_type 映射（pivot 只支持数值列，需单独保留）
+        code_to_type = (
+            df[["ts_code", "asset_type"]]
+            .drop_duplicates()
+            .set_index("ts_code")["asset_type"]
+        )
+
         prices = df_full.pivot(
             index="trade_date", columns="ts_code", values="adj_close"
         )
@@ -179,7 +195,9 @@ class ForwardReturnsCalculator(LabelCalculator):
         )
 
         self.logger.info(
-            f"[2/4] pivot shape: {prices.shape}, computing forward returns..."
+            f"[2/4] pivot shape: {prices.shape} "
+            f"(stocks={len(prices.columns)}, dates={len(prices.index)}), "
+            f"computing forward returns..."
         )
 
         # ===== Step 4: 按交易日历 shift 计算各 horizon =====
@@ -218,7 +236,8 @@ class ForwardReturnsCalculator(LabelCalculator):
             base = base.merge(ret_long, on=["trade_date", "ts_code"], how="left")
             base = base.merge(susp_long, on=["trade_date", "ts_code"], how="left")
 
-        # ===== Step 5: 过滤到输出区间 =====
+        # ===== Step 5: 过滤到输出区间 + 恢复 asset_type =====
+        base["asset_type"] = base["ts_code"].map(code_to_type)
         if start_date:
             start_dt = pd.to_datetime(start_date.replace("-", ""), format="%Y%m%d")
             base = base[base["trade_date"] >= start_dt]
