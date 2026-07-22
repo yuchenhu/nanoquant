@@ -1,194 +1,244 @@
-"""前瞻收益标签（从 data/label/forward_returns.py 迁移到新 BaseCalculator）。
+"""未来 N 日收益率标签（个股维度）。
 
 表名：label_forward_returns（基类自动加 label_ 前缀）
 主键：ts_code + trade_date
 biz_date_col：trade_date
-write_mode：upsert（按主键覆盖，幂等）
+write_mode：overwrite
+partition_col：trade_date
 
-依赖：panel_stock_daily（个股×日 行情宽表）
+依赖：panel_stock_daily（个股 x 日 行情宽表，含 adj_factor + is_suspend）
+
+----
+设计决策（2026-07-22 重构）：
+1. 交易日历回推（非 per-stock rolling）：所有 ts_code 用同一个 trade_date -> trade_date+N 映射。
+   停牌日 forward-fill adj_close + 标记 is_suspend_N。这是私募标准做法，保证横截面可比。
+2. 公式：forward_return_N = adj_close[T+1+N] / adj_close[T+1] - 1
+   T+1 买入（避免未来函数），持有 N 个交易日后 T+1+N 卖出。
+3. N in {1, 2, 3, 5, 10, 20, 40, 60}。
+4. 更新策略：每天回跑 T-61 ~ T，partition_col = trade_date，overwrite 覆盖。
+5. 个股 + 指数同一张表（ts_code 列区分），本次先实现个股，指数扩展只需在 get_data 加一路 UNION。
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
-from core.dates import get_next_n_trading_date, get_previous_n_trading_date
+from core.dates import get_next_n_trading_date
 from data.label.base import LabelCalculator
 
 logger = logging.getLogger(__name__)
 
+# 未来收益率窗口（交易日）
+FORWARD_WINDOWS = [1, 2, 3, 5, 10, 20, 40, 60]
+# 最大窗口（交易日）
+MAX_WINDOW = FORWARD_WINDOWS[-1]
+# 读数据前向扩展窗口缓冲（交易日）：MAX_WINDOW + 10 天余量
+READ_BUFFER_TRADING_DAYS = MAX_WINDOW + 10
+
 
 class ForwardReturnsCalculator(LabelCalculator):
-    """前瞻收益标签计算器。
+    """未来 N 日收益率标签计算器。
 
-    生成 1/5/10/20 日前瞻收益、对数收益、最大回撤、夏普等标签。
+    从 panel_stock_daily 取 adj_close（= close * adj_factor），
+    按交易日历回推计算 forward_return_N = adj_close[T+1+N] / adj_close[T+1] - 1。
+    停牌日 forward-fill 价格 + 标记 is_suspend_N。
     """
 
-    # ===== LabelCalculator 类属性 =====
-    table_name = "forward_returns"  # → label_forward_returns
+    table_name = "forward_returns"
     primary_keys = ["ts_code", "trade_date"]
     biz_date_col = "trade_date"
     write_mode = "overwrite"
     partition_col = "trade_date"
 
-    # 前瞻窗口
-    forward_windows: List[int] = [1, 5, 10, 20]
-    # 回看 buffer（用于计算当日 vwap 等参考价）
-    lookback_period: int = 5
+    output_schema = {
+        "ts_code": "string",
+        "trade_date": "date",
+        "fwd_ret_1d": "float",
+        "fwd_ret_2d": "float",
+        "fwd_ret_3d": "float",
+        "fwd_ret_5d": "float",
+        "fwd_ret_10d": "float",
+        "fwd_ret_20d": "float",
+        "fwd_ret_40d": "float",
+        "fwd_ret_60d": "float",
+        "is_suspend_1d": "int",
+        "is_suspend_2d": "int",
+        "is_suspend_3d": "int",
+        "is_suspend_5d": "int",
+        "is_suspend_10d": "int",
+        "is_suspend_20d": "int",
+        "is_suspend_40d": "int",
+        "is_suspend_60d": "int",
+    }
 
     def __init__(self, engine=None):
-        """初始化。"""
         super().__init__(engine=engine)
         self.logger.info("ForwardReturnsCalculator 初始化完成")
 
-    # ===== output_schema =====
-    @property
-    def output_schema(self) -> dict:  # type: ignore[override]
-        """输出 schema。"""
-        schema = {"ts_code": "string", "trade_date": "string"}
-        for n in self.forward_windows:
-            schema[f"ret_{n}d"] = "float"
-            schema[f"log_ret_{n}d"] = "float"
-            schema[f"vw_ret_{n}d"] = "float"
-            schema[f"max_up_{n}d"] = "float"
-            schema[f"max_down_{n}d"] = "float"
-            schema[f"max_drawdown_{n}d"] = "float"
-            schema[f"sharpe_{n}d"] = "float"
-            schema[f"vol_{n}d"] = "float"
-        return schema
-
-    # ===== get_data =====
     def get_data(
         self,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         **params: Any,
     ) -> pd.DataFrame:
-        """取 panel_stock_daily（按 trade_date 区间，向前回看 lookback_period 天）。"""
-        extended_start = None
+        """取 panel_stock_daily 数据，end_date 向前扩展 READ_BUFFER_TRADING_DAYS 个交易日。
+
+        start_date/end_date 可能是 YYYY-MM-DD 或 YYYYMMDD 格式。
+        """
         if start_date:
             start_date = start_date.replace("-", "")
-            extended_start = get_previous_n_trading_date(start_date, self.lookback_period)
         if end_date:
             end_date = end_date.replace("-", "")
 
+        # 向前扩展 end_date 以覆盖最远 horizon 的未来价格
+        read_end = (
+            get_next_n_trading_date(end_date, READ_BUFFER_TRADING_DAYS)
+            if end_date
+            else None
+        )
+
         query = """
         SELECT
-            ts_code, trade_date, open, high, low, close, pre_close,
-            pct_chg, log_return, vol, amount, vwap,
-            turnover_rate_f, total_mv, circ_mv,
-            l1_code, l1_name, l2_code, l2_name
+            ts_code, trade_date, close, adj_factor, is_suspend
         FROM panel_stock_daily
         WHERE 1=1
         """
-        if extended_start:
-            query += f" AND trade_date >= '{extended_start}'"
-        if end_date:
-            query += f" AND trade_date <= '{end_date}'"
-        entity_list: Optional[List[str]] = params.get("entity_list")
-        if entity_list:
-            codes_str = ",".join([f"'{c}'" for c in entity_list])
-            query += f" AND ts_code IN ({codes_str})"
+        if start_date:
+            query += f" AND trade_date >= '{start_date}'"
+        if read_end:
+            query += f" AND trade_date <= '{read_end}'"
 
         self.logger.info(
-            f"取 panel_stock_daily: {extended_start or '开始'}~{end_date or '结束'}, "
-            f"股票数: {len(entity_list) if entity_list else '全部'}"
+            f"取 panel_stock_daily: {start_date or '开始'}~{read_end or '结束'}"
         )
         return pd.read_sql(query, self.engine)
 
-    # ===== process_data =====
-    def process_data(self, data: pd.DataFrame, **params: Any) -> pd.DataFrame:
-        """计算前瞻收益标签。"""
+    def process_data(
+        self,
+        data: pd.DataFrame,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        **params: Any,
+    ) -> pd.DataFrame:
+        """计算未来 N 日收益率标签。
+
+        步骤：
+        1. 计算 adj_close = close * adj_factor
+        2. 构建 (trade_date x ts_code) 全网格，停牌日 forward-fill
+        3. pivot 为矩阵，按交易日历 shift 计算各 horizon 收益率
+        4. 过滤到 [start_date, end_date] 输出区间
+        """
         if data.empty:
             self.logger.warning("输入数据为空")
             return pd.DataFrame()
 
+        # ===== Step 1: 计算 adj_close =====
         df = data.copy()
+        df["adj_close"] = df["close"] * df["adj_factor"]
+        # trade_date 转 datetime 以便比较
         df["trade_date"] = pd.to_datetime(df["trade_date"])
-        df = df.sort_values(["ts_code", "trade_date"], ascending=[True, True]).reset_index(drop=True)
-        self.logger.info(f"原始数据共 {len(df)} 行")
 
-        # 计算前瞻收益
-        result = df[["ts_code", "trade_date", "close", "vwap"]].copy()
-        result["trade_date_str"] = result["trade_date"].dt.strftime("%Y%m%d")
+        all_dates = sorted(df["trade_date"].unique())
+        all_codes = sorted(df["ts_code"].unique())
 
-        for n in self.forward_windows:
-            # n 日后收盘价
-            result[f"close_{n}d_ahead"] = df.groupby("ts_code")["close"].shift(-n)
-            result[f"high_{n}d_ahead"] = df.groupby("ts_code")["high"].shift(-n)
-            result[f"low_{n}d_ahead"] = df.groupby("ts_code")["low"].shift(-n)
-            result[f"vwap_{n}d_ahead"] = df.groupby("ts_code")["vwap"].shift(-n)
+        self.logger.info(
+            f"[1/4] {len(all_codes)} stocks x {len(all_dates)} dates, "
+            f"building full grid for calendar-based forward returns..."
+        )
 
-            # n 日内最高/最低
-            high_n = (
-                df.groupby("ts_code")["high"]
-                .rolling(window=n, min_periods=1)
-                .max()
-                .shift(-n + 1)
-                .reset_index(level=0, drop=True)
+        # ===== Step 2: 构建全网格 + forward-fill =====
+        full_idx = pd.MultiIndex.from_product(
+            [all_dates, all_codes], names=["trade_date", "ts_code"]
+        )
+        df_full = (
+            df.set_index(["trade_date", "ts_code"])
+            .reindex(full_idx)
+            .sort_index()
+        )
+
+        # 按 ts_code 分组 forward-fill（停牌日沿用上一交易日价格）
+        df_full["adj_close"] = df_full.groupby("ts_code")["adj_close"].ffill()
+        df_full["is_suspend"] = (
+            df_full.groupby("ts_code")["is_suspend"]
+            .ffill()
+            .fillna(1)
+            .astype(int)
+        )
+        df_full = df_full.reset_index()
+
+        # ===== Step 3: pivot 为矩阵 =====
+        prices = df_full.pivot(
+            index="trade_date", columns="ts_code", values="adj_close"
+        )
+        suspends = df_full.pivot(
+            index="trade_date", columns="ts_code", values="is_suspend"
+        )
+
+        self.logger.info(
+            f"[2/4] pivot shape: {prices.shape}, computing forward returns..."
+        )
+
+        # ===== Step 4: 按交易日历 shift 计算各 horizon =====
+        # 入口价格：T+1（shift(-1)）
+        entry_prices = prices.shift(-1)
+
+        # 从原始数据取 (ts_code, trade_date) 基础对
+        base = df[["ts_code", "trade_date"]].drop_duplicates()
+
+        for N in FORWARD_WINDOWS:
+            # 未来价格：T+1+N
+            future_prices = prices.shift(-(N + 1))
+            ret_matrix = future_prices.values / entry_prices.values - 1
+
+            # 停牌标记：T+1 或 T+1+N 任一停牌 -> 1
+            entry_suspend = suspends.shift(-1)
+            exit_suspend = suspends.shift(-(N + 1))
+            suspend_matrix = (
+                (entry_suspend.fillna(1).values == 1)
+                | (exit_suspend.fillna(1).values == 1)
+            ).astype(int)
+
+            # 转为长表
+            ret_df = pd.DataFrame(
+                ret_matrix, index=prices.index, columns=prices.columns
             )
-            low_n = (
-                df.groupby("ts_code")["low"]
-                .rolling(window=n, min_periods=1)
-                .min()
-                .shift(-n + 1)
-                .reset_index(level=0, drop=True)
+            ret_long = ret_df.stack().reset_index()
+            ret_long.columns = ["trade_date", "ts_code", f"fwd_ret_{N}d"]
+
+            susp_df = pd.DataFrame(
+                suspend_matrix, index=prices.index, columns=prices.columns
             )
-            result[f"max_high_{n}d"] = high_n
-            result[f"min_low_{n}d"] = low_n
+            susp_long = susp_df.stack().reset_index()
+            susp_long.columns = ["trade_date", "ts_code", f"is_suspend_{N}d"]
 
-            # 前瞻收益
-            result[f"ret_{n}d"] = result[f"close_{n}d_ahead"] / result["close"] - 1
-            result[f"log_ret_{n}d"] = np.log(result[f"close_{n}d_ahead"] / result["close"])
-            result[f"vw_ret_{n}d"] = result[f"vwap_{n}d_ahead"] / result["vwap"] - 1
+            base = base.merge(ret_long, on=["trade_date", "ts_code"], how="left")
+            base = base.merge(susp_long, on=["trade_date", "ts_code"], how="left")
 
-            # 最大上涨/下跌
-            result[f"max_up_{n}d"] = result[f"max_high_{n}d"] / result["close"] - 1
-            result[f"max_down_{n}d"] = result[f"min_low_{n}d"] / result["close"] - 1
-
-            # 最大回撤（n 日内）
-            cummax = result[f"close_{n}d_ahead"].fillna(result["close"])
-            # 简化：用 close 序列的滚动 cummax
-            close_ahead = df.groupby("ts_code")["close"].shift(-n)
-            rolling_max = (
-                df.groupby("ts_code")["close"]
-                .rolling(window=n + 1, min_periods=1)
-                .max()
-                .shift(-n)
-                .reset_index(level=0, drop=True)
-            )
-            result[f"max_drawdown_{n}d"] = (close_ahead - rolling_max) / rolling_max
-
-            # n 日波动率与夏普
-            ret = df.groupby("ts_code")["pct_chg"].shift(-n) / 100
-            rolling_std = (
-                df.groupby("ts_code")["pct_chg"]
-                .rolling(window=n, min_periods=1)
-                .std()
-                .shift(-n + 1)
-                .reset_index(level=0, drop=True)
-            ) / 100
-            result[f"vol_{n}d"] = rolling_std * np.sqrt(252)
-            result[f"sharpe_{n}d"] = result[f"ret_{n}d"] / (result[f"vol_{n}d"] + 1e-8)
-
-            # 清理临时列
-            result = result.drop(
-                [f"close_{n}d_ahead", f"high_{n}d_ahead", f"low_{n}d_ahead",
-                 f"vwap_{n}d_ahead", f"max_high_{n}d", f"min_low_{n}d"],
-                axis=1,
-            )
-
-        # 过滤到目标 end_date
-        end_date = params.get("end_date")
+        # ===== Step 5: 过滤到输出区间 =====
+        if start_date:
+            start_dt = pd.to_datetime(start_date.replace("-", ""), format="%Y%m%d")
+            base = base[base["trade_date"] >= start_dt]
         if end_date:
-            end_date = end_date.replace("-", "")
-            result = result[result["trade_date_str"] == end_date]
+            end_dt = pd.to_datetime(end_date.replace("-", ""), format="%Y%m%d")
+            base = base[base["trade_date"] <= end_dt]
 
-        result = result.drop(["trade_date_str", "close", "vwap"], axis=1, errors="ignore")
-        result = result.replace([np.nan, np.inf, -np.inf, pd.NaT], None)
-        result["trade_date"] = pd.to_datetime(result["trade_date"]).dt.strftime("%Y%m%d")
-        self.logger.info(f"前瞻收益标签计算完成，输出数据 {len(result)} 条记录")
-        return result
+        # 统计
+        valid_count = base.dropna(
+            subset=[f"fwd_ret_{MAX_WINDOW}d"]
+        ).shape[0]
+        total_count = base.shape[0]
+        self.logger.info(
+            f"[3/4] output: {total_count} rows, "
+            f"{valid_count} with valid fwd_ret_{MAX_WINDOW}d "
+            f"({valid_count / max(total_count, 1) * 100:.1f}%), "
+            f"date range [{base['trade_date'].min().date()} ~ {base['trade_date'].max().date()}]"
+        )
+
+        # NaN 转 None（MySQL NULL）
+        base = base.where(pd.notnull(base), None)
+
+        return base
