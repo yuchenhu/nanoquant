@@ -139,10 +139,14 @@ class BaseCalculator:
     # ===== 落库（集成 schema-as-code） =====
 
     def save_to_database(self, data: pd.DataFrame) -> None:
-        """落库：自动建表/演化 schema + 日期转换 + write_mode 写入。"""
+        """落库：自动建表/演化 schema + 日期转换 + 主键去重 + write_mode 写入。"""
         schema = self._resolve_schema(data)
         ensure_table(self.table_name, schema, self.primary_keys)
         data = convert_date_columns(data, schema)
+
+        # 落库前按主键去重（tushare 偶发重复，覆盖所有 write_mode）
+        data = self._dedup_by_pk(data)
+
         if self.write_mode == "overwrite":
             if not self.partition_col:
                 raise ValueError(
@@ -167,6 +171,54 @@ class BaseCalculator:
         self.logger.info(
             f"{self.table_name} 落库 {len(data)} 行，write_mode={self.write_mode}"
         )
+
+    def _dedup_by_pk(self, data: pd.DataFrame) -> pd.DataFrame:
+        """按主键去重。有 update_flag 则留最大版本，否则留最后一条。
+
+        重复时打 WARNING 并显式列出被删主键值（不静默吞）。
+        overwrite_by_partition 内部也有去重，此处是兜底（覆盖 truncate/append 路径）。
+        """
+        pk = [c for c in self.primary_keys if c in data.columns]
+        if not pk:
+            return data
+        dup_mask = data.duplicated(subset=pk, keep=False)
+        n_dup = int(dup_mask.sum())
+        if n_dup == 0:
+            return data
+
+        dup_keys = (
+            data.loc[dup_mask, pk]
+            .drop_duplicates()
+            .head(20)
+            .to_dict("records")
+        )
+        self.logger.warning(
+            "!!! %s 发现 %d 行重复主键（主键=%s），数据源可能异常 !!!",
+            self.table_name, n_dup, pk,
+        )
+        for k in dup_keys:
+            self.logger.warning("    重复主键: %s", k)
+        if len(dup_keys) == 20:
+            self.logger.warning("    （仅显示前 20 组重复主键，可能还有更多）")
+
+        before = len(data)
+        if "update_flag" in data.columns:
+            data = data.copy()
+            data["_uf"] = pd.to_numeric(
+                data["update_flag"], errors="coerce"
+            ).fillna(0)
+            data = (
+                data.sort_values(pk + ["_uf"])
+                .drop_duplicates(subset=pk, keep="last")
+                .drop(columns="_uf")
+            )
+        else:
+            data = data.drop_duplicates(subset=pk, keep="last")
+        self.logger.warning(
+            "    去重处理：%d 行 -> %d 行（删除 %d 行）",
+            before, len(data), before - len(data),
+        )
+        return data
 
     def _resolve_schema(self, data: pd.DataFrame) -> Dict[str, str]:
         """解析 schema：加工层用 output_schema，接入层从 df 推断。"""

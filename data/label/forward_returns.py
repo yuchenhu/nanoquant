@@ -29,7 +29,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from core.dates import get_next_n_trading_date
+from core.dates import get_next_n_trading_date, get_previous_n_trading_date, get_today_str
 from data.label.base import LabelCalculator
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,8 @@ FORWARD_WINDOWS = [1, 2, 3, 5, 10, 20, 40, 60]
 MAX_WINDOW = FORWARD_WINDOWS[-1]
 # 读数据前向扩展窗口缓冲（交易日）：MAX_WINDOW + 10 天余量
 READ_BUFFER_TRADING_DAYS = MAX_WINDOW + 10
+# 增量更新时 start_date 前推交易日数（覆盖被新价格改变的旧标签）
+LOOKBACK_TRADING_DAYS = MAX_WINDOW + 1
 
 
 class ForwardReturnsCalculator(LabelCalculator):
@@ -81,6 +83,33 @@ class ForwardReturnsCalculator(LabelCalculator):
     def __init__(self, engine=None):
         super().__init__(engine=engine)
         self.logger.info("ForwardReturnsCalculator 初始化完成")
+
+    def update(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        **params: Any,
+    ) -> pd.DataFrame:
+        """增量更新：start_date 前推 LOOKBACK_TRADING_DAYS 个交易日。
+
+        新价格数据到达后，过去 60 天的 forward returns 会变化，
+        必须覆盖 [start_date-LOOKBACK, end_date] 整个区间。
+        """
+        start_date = self._normalize_date(start_date) or self._next_after_biz_date()
+        end_date = self._normalize_date(end_date) or get_today_str()
+
+        if start_date:
+            lookback_start = get_previous_n_trading_date(
+                start_date, LOOKBACK_TRADING_DAYS
+            )
+            if lookback_start:
+                self.logger.info(
+                    f"forward_returns 回溯: start_date {start_date} "
+                    f"-> {lookback_start} (LOOKBACK={LOOKBACK_TRADING_DAYS}t)"
+                )
+                start_date = lookback_start
+
+        return super().update(start_date=start_date, end_date=end_date, **params)
 
     def get_data(
         self,
