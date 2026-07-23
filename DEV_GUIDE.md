@@ -43,8 +43,6 @@
 | `scripts/00_init_database.py` | 建库建表                 | `python scripts/00_init_database.py` |
 | `scripts/run_ingest.py`       | 接入层拉数                | 见下                                   |
 | `scripts/run_compute.py`      | 加工层计算                | 见下                                   |
-| `scripts/run_strategy.py`     | 策略层回测/信号             | 见下                                   |
-| `scripts/daily_task.bat`      | 每日定时（Windows 任务计划调它） | 双击或任务计划触发                            |
 
 ### 1.1 run\_ingest.py（接入层）
 
@@ -61,7 +59,7 @@ python scripts/run_ingest.py --only daily,daily_basic
 # 排除某些接口
 python scripts/run_ingest.py --exclude income,balancesheet
 
-# 列出全部 29 个接口
+# 列出全部 31 个接口
 python scripts/run_ingest.py --list
 ```
 
@@ -96,7 +94,7 @@ python scripts/run_strategy.py --mode backtest --start 20240101 --end 20241231
 python scripts/run_strategy.py --mode backtest --lookback 20 --max-positions 5 --category broad
 ```
 
-> **2026-07-22 更新**：`--mode signal` 已废弃（`signal_rebalance` 接口 + `signals/generator.py` 删除，write_mode=upsert 违反项目规则）。后续如需调仓信号在 `portfolio/` 层重写。
+> **2026-07-22 更新**：`--mode signal` 已废弃（`signal_rebalance` 接口 + `signals/generator.py` 删除，write_mode=upsert 违反项目规则）。后续如需调仓信号在 `portfolio/` 层重写。`--mode backtest` 正常可用。
 
 ### 1.4 scripts/sync.py — 日常补数主命令
 
@@ -255,7 +253,7 @@ from data.etl.base import (
     TushareFullRefreshCalculator,         # 基础信息类基类（全量 truncate）
 )
 
-# 29 个具体 Calculator 在 data/etl/loader.py，注册表：
+# 31 个具体 Calculator 在 data/etl/loader.py，注册表：
 from data.etl.loader import CALCULATORS  # {"daily": StockDailyCalculator, ...}
 ```
 

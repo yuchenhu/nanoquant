@@ -4,7 +4,7 @@
 > 具体 API 速查、踩坑集、策略层代码见 `DEV_GUIDE.md`。
 > 项目进度见 `ROADMAP.md`，脚本命令见 `README.md`，tushare 接口细节见 `TUSHARE_API_GUIDE.md`。
 >
-> **工程硬规则（harness 约束 + 三层 loop 验证门 + 协作节奏）的单一事实源是 `.trae/rules/nanoquant_loop.md` 项目规则**（AI 始终生效）。本文件只保留架构地图与业务原则，不重复硬规则；冲突时以项目规则为准。Loop Engineering 方法论见 `LOOP_ENGINEERING.md`。
+> **工程硬规则（harness 约束 + 三层 loop 验证门 + 协作节奏）的单一事实源是 `.trae/rules/nanoquant_loop.md` 项目规则**（AI 始终生效）。本文件只保留架构地图与业务原则，不重复硬规则；冲突时以项目规则为准。
 
 ═══════════════════════════════════════════════════════════════
 ## 最高原则（每条都是硬约束，不是建议）
@@ -72,7 +72,6 @@
 |------|--------|------|
 | **本文件** | 每次新会话 | 架构地图、最高原则、核心约定 |
 | `.trae/rules/nanoquant_loop.md` | **始终生效**（Trae 项目规则，自动加载） | **工程硬规则单一事实源**：harness 约束 H1-H12 + Ingest/Compute/Strategy 三层 loop 验证门 + 协作节奏 |
-| `LOOP_ENGINEERING.md` | 设计新 loop / 想理解规则背后的方法论时 | Loop Engineering 四层栈/五移动/生成器-评估器分离/新 loop 准入清单 |
 | `ROADMAP.md` | **开发前必开** — 确认进度/缺口 | 缺口清单、各阶段完成度 |
 | `DEV_GUIDE.md` | **开发前必开 §7** — 踩坑集；写代码时翻其他章节 | 模块 API 速查、write_mode、增量策略、新 Calculator 模板、**所有踩过的坑** |
 | `TUSHARE_API_GUIDE.md` | **改/加 tushare 接口时必开** | 接口字段、参数、取数逻辑 |
@@ -98,7 +97,7 @@ nanoquant/
 ├── config/                       # 全局配置
 │   ├── settings.py               # .env 加载 + settings 单例（tushare_token / db_url）
 │   ├── database.py               # engine + execute_sql / save_to_database
-│   └── tushare_apis.json         # 29 个 tushare 接口配置（fields + 增量策略 + write_mode）
+│   └── tushare_apis.json         # 31 个 tushare 接口配置（fields + 增量策略 + write_mode）
 │
 ├── core/                         # 跨层共享核心
 │   ├── calculator.py             # BaseCalculator（统一 update + 水位 + schema-as-code）
@@ -107,9 +106,9 @@ nanoquant/
 │   └── preprocessing.py          # mad_winsorize / neutralize_factor / rank_factor ...
 │
 ├── data/
-│   ├── etl/                      # 接入层（tushare 1:1 复刻，29 个 Calculator）
+│   ├── etl/                      # 接入层（tushare 1:1 复刻，31 个 Calculator）
 │   │   ├── base.py               # TushareCalculatorMixin + 四个中间基类
-│   │   └── loader.py             # 29 个具体 Calculator + CALCULATORS 注册表
+│   │   └── loader.py             # 31 个具体 Calculator + CALCULATORS 注册表
 │   ├── panel/                    # 加工层 - 面板数据（实体×时间对齐宽表）
 │   ├── factor/                   # 加工层 - 因子（实体×日）
 │   └── label/                    # 加工层 - 标签（实体×日）

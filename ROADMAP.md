@@ -17,7 +17,7 @@
 - [x] **保底去重提取为公共函数**（`_dedup_by_pk`）：truncate / overwrite 模式统一调用，update_flag 留最大版本，显式 WARNING 列重复主键
 - [x] **2010 全年 backfill 验证通过**：stock_daily 432136 行 / daily_basic 432129 行 / index_daily 3532 行 / adj_factor 453275 行，242 交易日全覆盖，无 SQL 错误
 - [x] **双轨制废弃**：删除 `.trae/rules/dual_machine_workflow.md` + `ROADMAP_nonddev.md` + `ROADMAP_dev.md`，回归单轨 ROADMAP。多数机器已配好 mysql 环境，双机区分无实际意义
-- [ ] Next: 真实回测引擎（1.1）+ 因子有效性检验（1.2）
+- [ ] Next: 回测引擎完善（1.1 真实成本/涨跌停/成交价）+ 因子有效性检验（1.2）
 
 ---
 
@@ -161,7 +161,7 @@
 - [x] **3 个单月回补 bug 已修复**：① ret 回看用 all_month_ends（非仅计算期）② amount_pct 月vs月对比（非月vs日）③ hsgt/margin/limit 取整月数据（非仅月末一天）；pct_above_ma60>1.0 边界 bug 已修复
 - [x] **所有抽象指标已注释物理含义**（up_down_ratio / amount_gini / pe_dispersion / pb_pe_divergence / avg_correlation / cross_sectional_vol / downside_vol_ratio / 资金流四指标）
 - [x] **逐月回补脚本**：`scripts/backfill_market_sentiment.py`（--start/--end/--resume，断点续跑）
-- [ ] **待全量回补**：2010-2026 全历史分年分批跑（单月~4-7min，约 192 个月）
+- [x] **全量回补完成**：2010-2026 全历史分年分批跑完，数据与 A 股历史印证通过
 - [ ] **null 容忍/不可覆盖字段**：待后续决策（limit_up_count 早年、margin 早年可能缺失等）
 
 ### 0.5c 市场状态(regime)方法论（已讨论定稿，待实现）
@@ -218,7 +218,7 @@
 - [ ] 复权因子断裂、价格跳变、财务异常值自动检测
 - [ ] ETF 折溢价、规模骤变、清盘退市处理规则
 - [ ] ST / 退市 / 新股上市初期的统一过滤口径
-- [ ] **DQC 全集体检**：全部 29 个数据源历史数据补完后，跑一次完整 data quality check（覆盖度/异常值/NULL/复权/跨表一致性），产出一份 DQC 报告
+- [ ] **DQC 全集体检**：全部 31 个数据源历史数据补完后，跑一次完整 data quality check（覆盖度/异常值/NULL/复权/跨表一致性），产出一份 DQC 报告
 
 ### 2.2 ETF 数据完整性（受 tushare 天花板限制）
 - [ ] 评估是否需要 ETF 申赎清单(PCF) / IOPV / 跟踪误差（tushare 弱或没有）
