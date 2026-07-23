@@ -1,18 +1,20 @@
-"""策略层运行脚本（Step 10）：ETF 截面轮动 MVP 闭环。
+"""策略层运行脚本：ETF 截面轮动回测。
 
-功能：
-1. 回测：用 portfolio.CrossSectionalMomentumStrategy + backtest.VectorizedBacktester 跑历史回测
-2. 信号：用 signals.SignalGenerator 生成最新调仓信号并落库
+真实成本（华泰涨乐财富通 ETF）：
+  - 佣金: 万2.5 双向，最低5元/笔
+  - 滑点: 0.1% 单边（保守）
+  - 往返合计: ~0.25% per unit turnover
+  - 可通过 --commission / --slippage 调整
 
 用法：
-    # 回测（默认近 1 年）
+    # 回测（默认参数）
     python scripts/run_strategy.py --mode backtest --start 20240101 --end 20241231
 
-    # 生成最新调仓信号
-    python scripts/run_strategy.py --mode signal
+    # 指定策略参数 + 成本
+    python scripts/run_strategy.py --mode backtest --lookback 20 --max-positions 5
 
-    # 指定策略参数
-    python scripts/run_strategy.py --mode signal --lookback 20 --max-positions 5
+    # 自定义成本
+    python scripts/run_strategy.py --mode backtest --commission 0.00015 --slippage 0.0005
 """
 from __future__ import annotations
 
@@ -47,10 +49,19 @@ def build_strategy(args) -> "CrossSectionalMomentumStrategy":
 
 def run_backtest(args) -> None:
     """运行回测。"""
-    from backtest.engine import VectorizedBacktester
+    from backtest.engine import CostConfig, VectorizedBacktester
 
     strategy = build_strategy(args)
-    bt = VectorizedBacktester(strategy=strategy, rebalance_freq=args.freq)
+    cost_config = CostConfig(
+        commission_rate=args.commission,
+        slippage=args.slippage,
+    )
+    bt = VectorizedBacktester(
+        strategy=strategy,
+        rebalance_freq=args.freq,
+        cost_config=cost_config,
+        capital=args.capital,
+    )
     result = bt.run(start_date=args.start, end_date=args.end)
 
     metrics = result.get("metrics", {})
@@ -63,6 +74,8 @@ def run_backtest(args) -> None:
     print("=" * 50)
     print(f"区间: {args.start} ~ {args.end}")
     print(f"调仓频率: {args.freq}")
+    print(f"初始资金: {args.capital:,.0f}")
+    print(f"成本模型: 佣金万{args.commission*10000:.1f} + 滑点{args.slippage*100:.1f}%")
     for k, v in metrics.items():
         if k in ("total_return", "annual_return", "annual_volatility", "max_drawdown"):
             print(f"  {k}: {v:.2%}")
@@ -108,6 +121,10 @@ def main() -> None:
         choices=["all", "broad", "industry", "style"],
         help="ETF 池分类",
     )
+    # 成本参数
+    parser.add_argument("--capital", type=float, default=1_000_000, help="初始资金（元）")
+    parser.add_argument("--commission", type=float, default=0.00025, help="佣金率（默认万2.5）")
+    parser.add_argument("--slippage", type=float, default=0.001, help="滑点率（默认0.1%%）")
 
     args = parser.parse_args()
 
