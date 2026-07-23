@@ -62,6 +62,24 @@
       "depends_on": ["stock_daily_panel"]
     },
     {
+      "task_id": "factor_momentum_r2",
+      "class": "data.factor.momentum_r2.MomentumR2Calculator",
+      "description": "指数动量xR^2 因子（20d/60d，区分稳步攀升 vs 陡拉）",
+      "depends_on": ["index_daily", "sw_daily"]
+    },
+    {
+      "task_id": "factor_momentum_term",
+      "class": "data.factor.momentum_term.MomentumTermCalculator",
+      "description": "指数动量期限结构因子（20d vs 60d 加速/减速）",
+      "depends_on": ["index_daily", "sw_daily"]
+    },
+    {
+      "task_id": "factor_overnight_intraday",
+      "class": "data.factor.overnight_intraday.OvernightIntradayCalculator",
+      "description": "指数隔夜/日内收益分解因子（四象限机构散户博弈）",
+      "depends_on": ["index_daily", "sw_daily"]
+    },
+    {
       "task_id": "label_forward_returns",
       "class": "data.label.forward_returns.ForwardReturnsCalculator",
       "description": "未来 N 日收益率标签（个股+ETF+指数统一，asset_type 列区分）",
