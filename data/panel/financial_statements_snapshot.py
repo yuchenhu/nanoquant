@@ -125,34 +125,32 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         for c in self.derived_columns:
             self.output_schema[c] = "float"
 
-    # ===== 重写 update：get_data 返回 dict，process_data 接受 dict =====
+    # ===== 重写 update：按月最后一个交易日跑快照 =====
     def update(
         self,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         **params: Any,
     ) -> pd.DataFrame:
-        """财务快照按 snapshot_date 逐日跑。
+        """财务快照按月最后一个交易日跑（非逐日）。
 
         start_date/end_date 是 snapshot_date 区间（yyyymmdd）。
         """
         start_date = self._normalize_date(start_date) or self._next_after_biz_date() or get_today_str()
         end_date = self._normalize_date(end_date) or get_today_str()
 
-        self.logger.info(f"{self.table_name} update: snapshot_date [{start_date}, {end_date}]")
+        self.logger.info(f"{self.table_name} update: snapshot_date range [{start_date}, {end_date}]")
 
-        # 逐 snapshot_date 跑（财务快照天然按日离散）
-        sd_dt = datetime.strptime(start_date, "%Y%m%d")
-        ed_dt = datetime.strptime(end_date, "%Y%m%d")
+        # 取该区间内每月的最后一个交易日
+        month_ends = self._get_month_end_dates(start_date, end_date)
+        self.logger.info(f"共 {len(month_ends)} 个月末: {month_ends[0]} ~ {month_ends[-1]}")
+
         all_results: List[pd.DataFrame] = []
-        cur = sd_dt
-        while cur <= ed_dt:
-            snap = cur.strftime("%Y%m%d")
+        for snap in month_ends:
             try:
                 raw = self.get_data(snap, snap, **params)
                 if not raw or raw.get('disclosure_date', pd.DataFrame()).empty:
                     self.logger.warning(f"{self.table_name} snapshot={snap} get_data 空，跳过")
-                    cur += timedelta(days=1)
                     continue
                 result = self.process_data(raw, snapshot_date=snap, **params)
                 if result is not None and not result.empty:
@@ -160,7 +158,6 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
                     self.logger.info(f"{self.table_name} snapshot={snap} 处理 {len(result)} 行")
             except Exception as e:
                 self.logger.error(f"{self.table_name} snapshot={snap} 失败: {e}")
-            cur += timedelta(days=1)
 
         if not all_results:
             return pd.DataFrame()
@@ -171,6 +168,24 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
             if max_biz:
                 self._set_biz_date(max_biz, len(final))
         return final
+
+    def _get_month_end_dates(self, start_date: str, end_date: str) -> List[str]:
+        """返回区间内每月的最后一个交易日（yyyymmdd 格式）。"""
+        from config.database import execute_sql
+        sql = f"""
+            SELECT cal_date FROM (
+                SELECT cal_date,
+                       ROW_NUMBER() OVER (PARTITION BY DATE_FORMAT(cal_date, '%%Y%%m') ORDER BY cal_date DESC) AS rn
+                FROM trade_cal
+                WHERE is_open = 1
+                  AND cal_date BETWEEN '{start_date}' AND '{end_date}'
+            ) t WHERE t.rn = 1
+            ORDER BY cal_date
+        """
+        df = execute_sql(sql)
+        if df.empty:
+            return []
+        return df["cal_date"].tolist()
 
     # ===== get_data：返回 dict（六张表） =====
     def get_data(
@@ -261,10 +276,12 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         def create_range(group):
             min_d = group['end_date'].min()
             max_d = group['end_date'].max()
-            dates = pd.date_range(start=min_d, end=max_d, freq='Q')
-            return pd.DataFrame({'ts_code': group['ts_code'].iloc[0], 'end_date': dates})
+            dates = pd.date_range(start=min_d, end=max_d, freq='QE')
+            # pandas 3.0: groupby.apply 不再把 group key 传入 group 内部
+            ts_code = group.name if isinstance(group.name, str) else group['ts_code'].iloc[0]
+            return pd.DataFrame({'ts_code': ts_code, 'end_date': dates})
 
-        ranges = df.groupby('ts_code').apply(create_range).reset_index(drop=True)
+        ranges = df.groupby('ts_code', group_keys=False).apply(create_range).reset_index(drop=True)
         return pd.merge(ranges, df, on=['ts_code', 'end_date'], how='left')
 
     def _deduplicate_table(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
@@ -341,10 +358,10 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         q4_mask = df['report_type'] == 4
         df.loc[:, self.bs_content_columns + self.inc_content_columns + self.cf_content_columns] /= 10000
         for col in self.mrq_columns:
-            df[col] = df.groupby('ts_code')[col].fillna(method='ffill', limit=1)
+            df[col] = df.groupby('ts_code')[col].ffill(limit=1)
         for col in self.mry_columns:
             df.loc[~q4_mask, col] = np.nan
-            df[col] = df.groupby('ts_code')[col].fillna(method='ffill', limit=3)
+            df[col] = df.groupby('ts_code')[col].ffill(limit=3)
         # 资产
         df['cash_assets'] = df['money_cap'].fillna(0) + df['trad_asset'].fillna(0)
         df['quick_receivables'] = df['notes_receiv'].fillna(0) + df['accounts_receiv'].fillna(0)
