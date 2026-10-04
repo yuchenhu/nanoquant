@@ -1,6 +1,6 @@
 """JSON 配置驱动的调度执行器。
 
-调度模型（见 CLAUDE.md 2.5 / 2.11）：
+调度模型（见 AGENTS.md §7）：
 - schedule_*.json 按 frequency（daily/weekly/monthly/irregular）组织任务
 - 每个任务声明：task_id / class（module.Class 路径）/ depends_on / params
 - runner 拓扑排序 + 上游表行数检查 + 调用 Calculator.update()

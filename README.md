@@ -115,7 +115,7 @@ nanoquant/
 └── tests/           # 测试
 ```
 
-详见 [CLAUDE.md](CLAUDE.md)。
+详见 [AGENTS.md](AGENTS.md)。
 
 ## 开发原则
 

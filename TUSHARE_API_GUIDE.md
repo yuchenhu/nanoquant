@@ -221,7 +221,7 @@ DELETE FROM {table} WHERE {partition_col} IN (:p0, :p1, ...);   -- 参数化 IN�
 - 跳变精确日：2024-08-19（前一天 `-6,774` 万元，当天 `88,110` 元）
 - 修复位置：`market_sentiment_monthly.py::_normalize_north_money()`，自动归一到万元
 - 验证脚本：`scripts/find_north_money_break.py`
-- 详见 DEV_GUIDE.md §7.16
+- 详见 DEV_GUIDE.md §1.16
 
 ---
 

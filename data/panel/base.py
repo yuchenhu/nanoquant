@@ -1,6 +1,6 @@
 """Panel 计算层基类（data/panel/）。
 
-设计（CLAUDE.md 2.2 / 硬约束 4）：
+设计（AGENTS.md §7）：
 - 继承 core.calculator.BaseCalculator（统一 update 入口 + schema-as-code + 水位）
 - 表名加 panel_ 前缀（与 etl 接入层表区分）
 - output_schema：加工层手写 schema dict（声明输出列类型，避免自动推断不准）

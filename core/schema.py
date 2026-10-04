@@ -1,6 +1,6 @@
 """Schema-as-code：从 DataFrame 推断 schema + 生成 DDL + 自动演化。
 
-设计（见 CLAUDE.md 2.6）：
+设计（见 AGENTS.md §7）：
 - 接入层：自动推断。表不存在 → infer_schema_from_df + ensure_table 建表；
   表存在 → evolve_schema 比对列差异，加列自动 ALTER，删列/改类型只告警不动。
 - 加工层：手写 output_schema dict，ensure_table_from_schema 建表。

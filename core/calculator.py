@@ -1,6 +1,6 @@
 """BaseCalculator：所有接入层/加工层 Calculator 的基类。
 
-设计（见 CLAUDE.md 2.5）：
+设计（见 AGENTS.md §7）：
 - 子类声明：table_name / primary_keys / write_mode / biz_date_col / output_schema
 - 子类实现：get_data(start_date, end_date, **params) + process_data(data, **params)
 - 统一入口 update(start_date, end_date, **params)：

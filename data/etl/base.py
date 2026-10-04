@@ -1,8 +1,8 @@
 """接入层 Calculator 基类（tushare 拉数 + 增量策略）。
 
-设计（CLAUDE.md 2.1 / 2.5 / 硬约束 1/3/7/8）：
+设计（AGENTS.md §7）：
 - TushareClient: 单例 tushare pro 客户端（token 从 config.settings 读）
-- load_api_config(): 从 config/tushare_apis.json 加载 26 个接口配置
+- load_api_config(): 从 config/tushare_apis.json 加载全部接口配置
 - TushareCalculatorMixin: 提供 fetch_tushare(api_name, **params)（分页 + 重试）
 - 五个中间基类（继承策略基类 + Mixin），实现 fetch_one_period：
     TushareByTradeDateCalculator: fetch_one_period(trade_date=...) → pro.api(trade_date=...)（overwrite）

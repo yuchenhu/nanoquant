@@ -55,7 +55,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
 
     # ---- 数据源坑 ----
     # moneyflow_hsgt.north_money 单位在 2024-08-19 发生跳变（万元→元，×10000）。
-    # 此处归一化到「万元」统一口径。详见 DEV_GUIDE.md §7.x 和 TUSHARE_API_GUIDE.md。
+    # 此处归一化到「万元」统一口径。详见 DEV_GUIDE.md §1.16 和 TUSHARE_API_GUIDE.md。
     NORTH_MONEY_UNIT_BREAK = "2024-08-19"  # 此日期起 tushare 返回单位变为「元」
     NORTH_MONEY_SCALE = 10000              # 旧单位(万元) × SCALE = 新单位(元)
 
@@ -129,7 +129,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         # ===== 资金(7) =====
         # north_money/margin_balance：全A独有，月度总和。单位已归一化为「万元」
         #   注意：tushare moneyflow_hsgt 接口 2024-08-19 起 north_money 单位突变（万元→元），
-        #   此处 _normalize_north_money() 自动统一到万元。详见 DEV_GUIDE.md §7
+        #   此处 _normalize_north_money() 自动统一到万元。详见 DEV_GUIDE.md §1.16
         "north_money": "float", "margin_balance": "float",
         # net_inflow_ratio：净主动买入 / 总主动成交。>0=主动买盘主导，<0=主动卖盘主导
         "net_inflow_ratio": "float",
