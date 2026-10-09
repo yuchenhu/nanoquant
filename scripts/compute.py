@@ -1,4 +1,4 @@
-"""加工层计算运行脚本（v2：按 schedule_compute.json 依赖拓扑排序执行）。
+r"""加工层计算运行脚本（v2：按 schedule_compute.json 依赖拓扑排序执行）。
 
 功能：读 pipeline/schedule_compute.json，合并 daily+monthly 任务，
      按 depends_on 拓扑排序后严格依序执行。
@@ -6,20 +6,20 @@
 用法：
 
     # 全量跑（按拓扑排序，所有 panel → factor → label）
-    python scripts/run_compute.py
+    scripts\py.bat scripts\compute.py
 
     # 只跑某层（含传递依赖）
-    python scripts/run_compute.py --layer panel
+    scripts\py.bat scripts\compute.py --layer panel
 
     # 跑指定任务 + 其上游（自动展开传递依赖，确保数据链路完整）
-    python scripts/run_compute.py --only panel:stock_daily,factor:high_low_spread
-    python scripts/run_compute.py --start 20260601 --only panel:market_sentiment_monthly
+    scripts\py.bat scripts\compute.py --only panel:stock_daily,factor:high_low_spread
+    scripts\py.bat scripts\compute.py --start 20260601 --only panel:market_sentiment_monthly
 
     # 只跑指定任务，不展开任何依赖（需自行确保上游已就绪）
-    python scripts/run_compute.py --start 20260601 --solo panel:market_sentiment_monthly
+    scripts\py.bat scripts\compute.py --start 20260601 --solo panel:market_sentiment_monthly
 
     # 列出所有可用 calculator
-    python scripts/run_compute.py --list
+    scripts\py.bat scripts\compute.py --list
 """
 from __future__ import annotations
 

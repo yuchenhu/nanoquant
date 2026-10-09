@@ -195,49 +195,51 @@ df["is_x"] = (condition).fillna(False).astype(int)
 | 脚本                            | 用途                   | 常用调用                                 |
 | ----------------------------- | -------------------- | ------------------------------------ |
 | `scripts/00_init_database.py` | 建库建表                 | `python scripts/00_init_database.py` |
-| `scripts/run_ingest.py`       | 接入层拉数                | 见下                                   |
-| `scripts/run_compute.py`      | 加工层计算                | 见下                                   |
+| `scripts/ingest.py`           | 接入层拉数（API 唯一入口）  | 见下                                   |
+| `scripts/compute.py`          | 加工层计算                | 见下                                   |
 | `scripts/run_strategy.py`     | 策略层回测/信号             | 见下                                   |
 | `scripts/daily_task.bat`      | 每日定时（Windows 任务计划调它） | 双击或任务计划触发                            |
 
-### 2.1 run\_ingest.py（接入层）
+### 2.1 ingest.py（API 接入层唯一入口）
+
+> 2026-10-04 更名：run\_ingest.py → sync.py → **ingest.py**（用法完全兼容）。
 
 ```bash
 # 增量（从水位次日续跑到今天）
-python scripts/run_ingest.py
+scripts\py.bat scripts\ingest.py
 
-# 回补指定 biz_date 区间
-python scripts/run_ingest.py --start 20240101 --end 20240131
+# 回补指定 biz_date 区间（幂等可断点；by_trade_date 区间>1年自动按年分块）
+scripts\py.bat scripts\ingest.py --start 20240101 --end 20241231
 
 # 只跑指定接口（逗号分隔，key 见 tushare_apis.json）
-python scripts/run_ingest.py --only daily,daily_basic
+scripts\py.bat scripts\ingest.py --only daily,daily_basic
 
 # 排除某些接口
-python scripts/run_ingest.py --exclude income,balancesheet
+scripts\py.bat scripts\ingest.py --exclude income,balancesheet
 
-# 列出全部接口
-python scripts/run_ingest.py --list
+# 列出全部接口与策略
+scripts\py.bat scripts\ingest.py --list
 ```
 
-### 2.2 run\_compute.py（加工层）
+### 2.2 compute.py（加工层）
 
 ```bash
 # 增量（panel → factor → label，按依赖顺序）
-python scripts/run_compute.py
+scripts\py.bat scripts\compute.py
 
 # 回补指定 biz_date 区间
-python scripts/run_compute.py --start 20210101 --end 20251231
+scripts\py.bat scripts\compute.py --start 20210101 --end 20251231
 
 # 只跑某一层
-python scripts/run_compute.py --layer panel
-python scripts/run_compute.py --layer factor
-python scripts/run_compute.py --layer label
+scripts\py.bat scripts\compute.py --layer panel
+scripts\py.bat scripts\compute.py --layer factor
+scripts\py.bat scripts\compute.py --layer label
 
 # 只跑指定 calculator（格式 layer:name）
-python scripts/run_compute.py --only panel:stock_daily,factor:price_volume_20d
+scripts\py.bat scripts\compute.py --only panel:stock_daily,factor:price_volume_20d
 
 # 列出全部 calculator
-python scripts/run_compute.py --list
+scripts\py.bat scripts\compute.py --list
 ```
 
 ### 2.3 run\_strategy.py（策略层）
@@ -256,26 +258,30 @@ python scripts/run_strategy.py --mode signal --dry-run
 python scripts/run_strategy.py --mode signal --lookback 20 --max-positions 5 --category broad
 ```
 
-### 2.4 scripts/sync.py — 日常补数主命令
+### 2.4 sync.py / check\_registry\_and\_gaps.py — 一键同步与体检
 
-统一的拉数入口（替代直接调 run\_ingest），尤其适合「本地、不定期开机」：
+> 2026-10-04 更名：sync\_all.py → **sync.py**（一键）；一键 = ingest.py + compute.py + 体检。
 
 ```bash
-# 日常：开机一键增量补齐（不传日期 → 各表从水位/保守窗口补到今天）
-python scripts/sync.py
+# 一键三段式：API 层(ingest.py) -> 加工层(compute.py 拓扑序) -> 缺口体检
+scripts\py.bat scripts\sync.py
+scripts\py.bat scripts\sync.py --start 20200101 --end 20261004   # 区间回补版
+scripts\py.bat scripts\sync.py --api-only / --compute-only / --skip-check
 
-# 手动区间回补（overwrite 幂等，可断点重跑）
-python scripts/sync.py --start 20200101 --end 20201231
-
-# 只刷 / 排除某些接口；列出所有接口
-python scripts/sync.py --only daily,moneyflow
-python scripts/sync.py --exclude weekly,monthly
-python scripts/sync.py --list
+# 全库体检：31 API + 17 加工层任务的 策略/水位/覆盖/起点对照/逐年断档 + 补数命令建议
+scripts\py.bat scripts\check_registry_and_gaps.py
 ```
 
-- 内部按 4 类策略分 Phase 执行（trade\_cal 最先 + reload 缓存 → 行情 → 财务 → 分红）。
-- 全新空库首次：先 `--start` 回补全历史（无参增量对空库只拉今天/最近窗口）。
-- 逐年回补历史：一年一条 `--start YYYY0101 --end YYYY1231`，断了重跑无副作用。
+- 前一步失败默认继续，最终以体检报告（查库）为准，不信脚本退出码。
+- daily\_task.bat（Windows 任务计划）已改为调 sync.py。
+
+### 2.5 ingest.py 分块机制（2026-10-04 新增）
+
+- by\_trade\_date 且区间 > 1 年时**按年分块**：每块独立 `calc.update(年首, 年末)`
+  → 逐年落库 + 推进水位。中断后重跑从水位续跑，内存不积攒。
+- 手动更细粒度（如按月）依旧可用：一条一条 `--start YYYYMM01 --end YYYYMM31`。
+- 月频表（mv\_monthly / financial\_statements\_snapshot）自身已月频固化（见 §4.4），
+  不依赖 sync 分块。
 
 ***
 
@@ -484,6 +490,50 @@ from data.label import CALCULATORS as LABEL_CALCULATORS
 
 **disclosure\_date PK** = `ts_code + end_date`；**dividend PK** = `ts_code + end_date + ann_date + div_proc + update_flag`。
 
+### 4.4 水位语义总表（etl\_biz_date，2026-10-04 实盘核验：31 表水位零漂移）
+
+| 数据类 | 水位列 | 语义 | 为什么不是别的列 |
+| --- | --- | --- | --- |
+| 行情类（daily/index\_daily/fund\_*/sw\_daily…） | `trade_date` | 已入库最大交易日 | 逐日切片天然单调 |
+| 财务类（income/balancesheet/cashflow/disclosure） | `end_date`（报告期） | 已入库最大报告期；增量自动重拉最近 4 期 | **不用 f\_ann\_date 做水位**：tushare 财务按 ann\_date 拉会漏"同报告期后发布的修订版"；按 period 整期重拉 + overwrite 才能完整覆盖修订（by\_period 文件头有完整论证） |
+| 分红 | `ex_date` | 已入库最大除权日；增量起点 min(水位, today-365d) | 用 ann\_date 会混入未实施的预案 |
+| 清单类（basic/classify/member\_all） | 无水位 | truncate 全量重刷 | 数据量小，全量最稳 |
+| 加工层 panel/factor | 各自 biz\_col（trade\_date/snapshot\_date） | 与上游同语义 | —— |
+
+**幂等统一口径**：接入层 overwrite（按分区先删后写）；加工层 upsert（按 PK 覆盖）或
+overwrite（panel\_stock\_daily 等）。同区间重跑 N 次结果一致，断点重跑无副作用。
+
+**写入语义选择规则**（2026-10-05，起因：fin\_snapshot 用 upsert 重刷会留旧逻辑脏行）：
+
+| 场景 | 用什么 | 判据 |
+| --- | --- | --- |
+| 全量即完整的小表（stock\_basic/index\_basic…） | truncate + append | 重写成本 < 增量逻辑 |
+| 批 = 完整分区（行情 trade\_date、财务 end\_date、月度快照 snapshot\_date、成分月末） | overwrite\_by\_partition | 重跑 = 精确替换，行集缩小时自动清旧行 |
+| 批 = 分区子集（entity\_list 增量）或无自然分区 | upsert（按 PK） | 子集安全，但重跑不删行——行集缩小会留脏 |
+
+核心区分：**upsert 只增改不删；分区覆盖是精确替换**。选错方向的后果——子集批用
+overwrite 会误删该分区其余数据（事故）；整分区批用 upsert 在重刷（改 lookback/PIT
+逻辑后）时残留旧行（慢性脏数据）。fast 批量回补（backfill\_fin\_snapshot.bulk\_fast）
+每月输出整月分区，走 overwrite；计算器单月/子集路径仍走 upsert。
+注意：主键约束只防"结构脏"（重复行），防不了"值脏"（nan/NaT 直接入库）——
+值靠写入前清洗（`astype(object).where(pd.notnull(df), None)` 稳态写法，见 §1）。
+
+### 4.5 月频固化（2026-10-04 新增，适用于"业务本身月频"的加工层表）
+
+适用：`panel_mv_monthly`、`panel_financial_statements_snapshot`（未来 index\_signal 月频因子同款）。
+
+机制：Calculator.update() 只取区间内【每月最后交易日】为 snapshot 日期，逐月落库 + 逐月推水位。
+
+为什么必须固化（mv\_monthly 的真实 bug）：不固化时，增量模式从"上次月末"次日跑到今天，
+若今天是月中（如 7/15），会把 7/15 当"该月最后一天"写入；等 7/31 再跑时写入 7/31 行——
+PK (ts\_code, trade\_date) 下两行并存，同月双行脏数据。固化后月中调用**零写入**（本月月末未到）。
+
+### 4.6 缺口体检口径（check\_registry\_and\_gaps.py）
+
+- daily 表：d1 >= 最近交易日；monthly 表：d1 >= 最近完整月末；period 表：d1 >= 最近已披露报告期；refresh 表：rows>0。
+- 水位漂移：etl\_biz_date < 表 max(biz) 即 [WARN]（2026-10-04 实测全库无漂移）。
+- 输出分三段：etl 31 接口盘点 / 加工层 17 任务盘点 / minimalist 补数命令（只列非 OK 项）。
+
 ***
 
 ## 5. 加工层指南（panel / factor / label）
@@ -630,4 +680,4 @@ df = fetch_tushare(
 1. 用 MCP 探查接口字段/参数
 2. 在 `config/tushare_apis.json` 加一项（标 `incremental_strategy` + `biz_date_col` + `fields`）
 3. 在 `data/etl/loader.py` 加 Calculator（声明 `config_key`，继承对应中间基类，通常 5 行代码）
-4. `python scripts/run_ingest.py --only <新接口key>` 验证
+4. `python scripts/sync.py --only <新接口key>` 验证

@@ -4,7 +4,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
 venv_python = root / ".venv" / "Scripts" / "python.exe"
-run_compute = root / "scripts" / "run_compute.py"
+run_compute = root / "scripts" / "compute.py"
 
 years = list(range(2010, 2027))
 failed = []

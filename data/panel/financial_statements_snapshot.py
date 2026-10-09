@@ -11,14 +11,13 @@ write_mode：upsert
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from config.database import save_to_database
-from core.dates import get_today_str
+from core.dates import get_today_str, get_trade_dates_between
 from core.schema import convert_date_columns, ensure_table, infer_schema_from_df
 from data.panel.base import PanelCalculator
 
@@ -33,7 +32,14 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
     biz_date_col = "snapshot_date"
     write_mode = "upsert"
 
-    def __init__(self, engine=None, lookback_years: int = 4):
+    def __init__(self, engine=None, lookback_years: int = 2):
+        """lookback 阶梯（每快照每股保留的报告份数 ≈ lookback_years × 4）：
+        - 1 年（4 份）：仅 TTM / PB —— 指数 PE/PB 聚合的最小需求
+        - 2 年（8 份）：+ 单季同比 / 累计同比（默认。不做深度基本面挖掘下的最小完整配置）
+        - 3 年（12 份）：+ TTM 同比（TTM(t) vs TTM(t-12m) 需回看约 25 个月的报告期）
+        - 4 年（16 份）：+ 两年增速类
+        更深的因子需求走原始三表（income/balancesheet 全历史 + f_ann_date）as-of 重算。
+        """
         super().__init__(engine=engine)
         self.lookback_years = lookback_years
         self._init_column_lists()
@@ -124,52 +130,63 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         for c in self.derived_columns:
             self.output_schema[c] = "float"
 
-    # ===== 重写 update：get_data 返回 dict，process_data 接受 dict =====
+    # ===== 重写 update：get_data 返回 dict，process_data 接受 dict；月频固化 =====
     def update(
         self,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         **params: Any,
     ) -> pd.DataFrame:
-        """财务快照按 snapshot_date 逐日跑。
+        """财务快照按【每月最后交易日】生成（月频固化）。
 
-        start_date/end_date 是 snapshot_date 区间（yyyymmdd）。
+        财报是低频数据，逐日快照无信息增量、存储 ×22，故固化月频：
+        start_date/end_date 为任意日期区间（yyyymmdd），本方法只取区间内
+        每月最后一个交易日作为 snapshot_date，其余日期忽略。
+        因此今后全量 sync 任意时间段，本表也只按该时间段的月末更新。
+
+        逐月落库（upsert）+ 逐月推进水位：长回补可中断重跑，不积攒内存。
         """
         start_date = self._normalize_date(start_date) or self._next_after_biz_date() or get_today_str()
         end_date = self._normalize_date(end_date) or get_today_str()
 
-        self.logger.info(f"{self.table_name} update: snapshot_date [{start_date}, {end_date}]")
+        month_ends = self._month_end_dates(start_date, end_date)
+        self.logger.info(
+            f"{self.table_name} update: 月频快照 [{start_date}, {end_date}] -> {len(month_ends)} 个月末"
+        )
+        if not month_ends:
+            self.logger.warning(f"{self.table_name} 区间内无月末交易日，跳过")
+            return pd.DataFrame()
 
-        # 逐 snapshot_date 跑（财务快照天然按日离散）
-        sd_dt = datetime.strptime(start_date, "%Y%m%d")
-        ed_dt = datetime.strptime(end_date, "%Y%m%d")
         all_results: List[pd.DataFrame] = []
-        cur = sd_dt
-        while cur <= ed_dt:
-            snap = cur.strftime("%Y%m%d")
+        for snap in month_ends:
             try:
                 raw = self.get_data(snap, snap, **params)
                 if not raw or raw.get('disclosure_date', pd.DataFrame()).empty:
                     self.logger.warning(f"{self.table_name} snapshot={snap} get_data 空，跳过")
-                    cur += timedelta(days=1)
                     continue
                 result = self.process_data(raw, snapshot_date=snap, **params)
                 if result is not None and not result.empty:
+                    self.save_to_database(result)   # 逐月落库，断点可重跑
+                    max_biz = self._max_biz_date(result)
+                    if max_biz:
+                        self._set_biz_date(max_biz, len(result))
                     all_results.append(result)
                     self.logger.info(f"{self.table_name} snapshot={snap} 处理 {len(result)} 行")
             except Exception as e:
                 self.logger.error(f"{self.table_name} snapshot={snap} 失败: {e}")
-            cur += timedelta(days=1)
 
         if not all_results:
             return pd.DataFrame()
-        final = pd.concat(all_results, ignore_index=True)
-        self.save_to_database(final)
-        if self.biz_date_col and self.biz_date_col in final.columns:
-            max_biz = self._max_biz_date(final)
-            if max_biz:
-                self._set_biz_date(max_biz, len(final))
-        return final
+        return pd.concat(all_results, ignore_index=True)
+
+    @staticmethod
+    def _month_end_dates(start_date: str, end_date: str) -> List[str]:
+        """[start_date, end_date] 内每月最后一个交易日（yyyymmdd，升序）。"""
+        days = get_trade_dates_between(start_date, end_date)
+        by_month: Dict[str, str] = {}
+        for d in days:      # days 升序，同月后值覆盖前值 -> 每月最后交易日
+            by_month[d[:6]] = d
+        return [by_month[m] for m in sorted(by_month)]
 
     # ===== get_data：返回 dict（六张表） =====
     def get_data(
@@ -250,20 +267,48 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         mv_cols = ['total_share', 'float_share', 'total_mv', 'circ_mv', 'ev', 'evnoa']
         div_cols = ['cash_div', 'base_share', 'total_div']
         other_cols = [c for c in all_cols if c not in key_cols + mv_cols + div_cols]
-        return merged[key_cols + mv_cols + div_cols + other_cols]
+        merged = merged[key_cols + mv_cols + div_cols + other_cols]
+        # NaN/NaT -> NULL 清洗（2026-10-04 修复）：
+        # 184 列财务快照大量缺失，pymysql 不接受 nan/NaT 字面量。
+        # 注意 replace([np.nan, ..., None]) 不可靠——pandas 会把 float 列的 None
+        # coerce 回 NaN；唯一稳态写法是先转 object dtype 再 where 填 None。
+        num_cols = merged.select_dtypes(include=[np.number]).columns
+        merged[num_cols] = merged[num_cols].replace([np.inf, -np.inf], np.nan)
+        return merged.astype(object).where(pd.notnull(merged), None)
 
     # ===== 内部方法（从 data/sql/financial_statements_snapshot.py 原样保留） =====
     def _expand_financial_dates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """季度网格展开（向量化版，2026-10-04 重写逐股 apply）。
+
+        语义与原版一致：每只股票在 [min(end_date), max(end_date)] 上生成
+        季度末网格（freq='Q' 即日历季末），left-merge 回原披露列。
+        原实现 groupby.apply 逐股跑 Python 循环（5400 组/月），
+        是月频回补的次要瓶颈；本版全程向量化。
+        """
         df = df.copy()
         df['end_date'] = pd.to_datetime(df['end_date'])
+        if df.empty:
+            return df
 
-        def create_range(group):
-            min_d = group['end_date'].min()
-            max_d = group['end_date'].max()
-            dates = pd.date_range(start=min_d, end=max_d, freq='Q')
-            return pd.DataFrame({'ts_code': group['ts_code'].iloc[0], 'end_date': dates})
-
-        ranges = df.groupby('ts_code').apply(create_range).reset_index(drop=True)
+        # 每股的季末起点/终点（与 date_range(freq='Q') 对齐：
+        # 第一个 >= min 的季末 = min 所在季的季末）。编码从 0 起：q = year*4 + (quarter-1)
+        span = df.groupby('ts_code')['end_date'].agg(['min', 'max']).reset_index()
+        base_q = span['min'].dt.year * 4 + (span['min'].dt.quarter - 1)
+        n_q = (
+            (span['max'].dt.year - span['min'].dt.year) * 4
+            + (span['max'].dt.quarter - span['min'].dt.quarter) + 1
+        )
+        # 展平成 (ts_code, quarter_index) 网格：np.repeat + 每股等差数列拼接
+        q_idx = np.concatenate([
+            np.arange(int(b), int(b) + int(n)) for b, n in zip(base_q, n_q)
+        ])
+        codes = np.repeat(span['ts_code'].to_numpy(), n_q.to_numpy())
+        # quarter_index -> 季末日期：qi = year*4+(quarter-1)，month = qi%4*3+3
+        ends = (
+            pd.to_datetime({'year': q_idx // 4, 'month': (q_idx % 4) * 3 + 3, 'day': 1})
+            + pd.offsets.MonthEnd(0)
+        )
+        ranges = pd.DataFrame({'ts_code': codes, 'end_date': ends})
         return pd.merge(ranges, df, on=['ts_code', 'end_date'], how='left')
 
     def _deduplicate_table(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
@@ -340,10 +385,10 @@ class FinancialStatementsSnapshotCalculator(PanelCalculator):
         q4_mask = df['report_type'] == 4
         df.loc[:, self.bs_content_columns + self.inc_content_columns + self.cf_content_columns] /= 10000
         for col in self.mrq_columns:
-            df[col] = df.groupby('ts_code')[col].fillna(method='ffill', limit=1)
+            df[col] = df.groupby('ts_code')[col].ffill(limit=1)
         for col in self.mry_columns:
             df.loc[~q4_mask, col] = np.nan
-            df[col] = df.groupby('ts_code')[col].fillna(method='ffill', limit=3)
+            df[col] = df.groupby('ts_code')[col].ffill(limit=3)
         # 资产
         df['cash_assets'] = df['money_cap'].fillna(0) + df['trad_asset'].fillna(0)
         df['quick_receivables'] = df['notes_receiv'].fillna(0) + df['accounts_receiv'].fillna(0)
