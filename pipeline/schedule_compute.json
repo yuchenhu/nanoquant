@@ -1,11 +1,31 @@
 {
-  "_comment": "加工层调度配置（data/panel+factor+label/ 的 Calculator）。frequency=调度频率。class 路径在 Step 6/7 迁移后生效（data/sql → data/panel，data/factor+label 迁到新 BaseCalculator）。",
+  "_comment": "加工层调度配置（data/panel+factor+label/ 的 Calculator）。只登记 daily/monthly 两个 section，compute.py 按依赖拓扑执行。2026-10-04 瘦身：下架 7 个旧个股因子研究线任务（见 _delisted），聚焦 宽基+行业轮动核心仓 + 股票卫星仓 + 因子仅作择时/风控 的定位。",
+  "_delisted": {
+    "_comment": "2026-10-04 下架（库中全空、属旧研究线；恢复 = 把条目复制回 daily 并跑 compute.py --solo）",
+    "market_sentiment_daily": "情绪日频版与月频版重复，regime 用月频足够",
+    "stock_percentiles": "个股时序分位，卫星仓按需再启用",
+    "factor_price_volume_20d": "旧个股价量因子线，已被 index_signal 计划取代",
+    "factor_high_low_spread": "同上",
+    "factor_industry_resonance": "行业信号将由 index_signal（sw_daily 口径）统一生成",
+    "factor_moneyflow_imbalance": "旧个股因子线",
+    "factor_trader_structure": "旧个股因子线"
+  },
+  "_deferred": {
+    "_comment": "已建成但暂缓调度的重任务（恢复 = 复制回 monthly 并跑 --solo）",
+    "factor_valuation": "个股估值因子（36月PIT×90列）。全量首跑为 Python 逐股逐月循环，小时级；当前宽基+行业轮动主线不需要（指数 PE 聚合走 fin_statement 直连），卫星仓/Barra-lite 阶段再启用。2026-10-04 暂缓。"
+  },
+  "_backlog": {
+    "_comment": "待建 compute（按优先级），建成后在对应 section 注册",
+    "index_signal": "factor_index_monthly 指数信号生成器（宽基+风格+行业 sw_daily 统一口径，SPEC v2 已定稿）",
+    "market_regime": "panel_market_regime 择时面板（ROADMAP P1.5，方法论已定稿）",
+    "etf_index_mapping": "指数信号 -> 可投 ETF 的执行映射（规模/流动性/费率选代表）"
+  },
   "daily": [
     {
       "task_id": "stock_daily_panel",
       "class": "data.panel.stock_daily_panel.StockDailyPanelCalculator",
-      "description": "个股×日 行情宽表（行情+复权+市值+ST+行业+指数成分）",
-      "depends_on": ["daily", "adj_factor", "daily_basic", "stock_st", "index_member_all", "index_membership_monthly"]
+      "description": "个股×日 行情宽表（行情+复权+市值+ST+行业）——卫星仓与风格工具的底座",
+      "depends_on": ["daily", "adj_factor", "daily_basic", "stock_st", "index_member_all"]
     },
     {
       "task_id": "index_membership_monthly",
@@ -16,56 +36,20 @@
     {
       "task_id": "fund_daily_panel",
       "class": "data.panel.fund_daily_panel.FundDailyPanelCalculator",
-      "description": "ETF×日 行情宽表（行情+复权+净值+份额+行业/风格/大类维度标签）",
+      "description": "ETF×日 行情宽表（行情+复权+净值+份额+行业/风格/大类维度标签）——ETF 轮动执行层",
       "depends_on": ["fund_basic", "fund_daily", "fund_adj", "fund_nav", "fund_share"]
-    },
-    {
-      "task_id": "market_sentiment_daily",
-      "class": "data.panel.market_sentiment_daily.MarketSentimentDailyCalculator",
-      "description": "市场×日 情绪",
-      "depends_on": ["stock_daily_panel"]
-    },
-    {
-      "task_id": "stock_percentiles",
-      "class": "data.panel.stock_percentiles.StockPercentilesCalculator",
-      "description": "个股×日 历史百分位（窗口统计量）",
-      "depends_on": ["stock_daily_panel"]
-    },
-    {
-      "task_id": "factor_price_volume_20d",
-      "class": "data.factor.price_volume_20d.PriceVolume20DCalculator",
-      "description": "价量动量因子（20日）",
-      "depends_on": ["stock_daily_panel"]
-    },
-    {
-      "task_id": "factor_high_low_spread",
-      "class": "data.factor.high_low_spread.HighLowSpreadCalculator",
-      "description": "高低价差因子",
-      "depends_on": ["stock_daily_panel"]
-    },
-    {
-      "task_id": "factor_industry_resonance",
-      "class": "data.factor.industry_resonance.IndustryResonanceCalculator",
-      "description": "行业共振因子",
-      "depends_on": ["stock_daily_panel", "sw_daily"]
-    },
-    {
-      "task_id": "factor_moneyflow_imbalance",
-      "class": "data.factor.moneyflow_imbalance.MoneyFlowImbalanceCalculator",
-      "description": "资金流不平衡因子",
-      "depends_on": ["stock_daily_panel", "moneyflow"]
-    },
-    {
-      "task_id": "factor_trader_structure",
-      "class": "data.factor.trader_structure.TraderStructureCalculator",
-      "description": "交易者结构因子",
-      "depends_on": ["stock_daily_panel"]
     },
     {
       "task_id": "label_forward_returns",
       "class": "data.label.forward_returns.ForwardReturnsCalculator",
-      "description": "未来 N 日收益率标签",
+      "description": "未来 N 日收益率标签——因子检验体系（P0.2）的评估底座",
       "depends_on": ["stock_daily_panel"]
+    },
+    {
+      "task_id": "label_index_forward_returns",
+      "class": "data.label.index_forward_returns.IndexForwardReturnsCalculator",
+      "description": "指数前向收益标签（宽基+风格+申万L1；T+1收盘入/N日收盘出；增量=固定回刷125交易日）",
+      "depends_on": ["index_daily", "sw_daily"]
     },
     {
       "task_id": "panel_data_quality",
@@ -76,9 +60,15 @@
   ],
   "monthly": [
     {
+      "task_id": "stock_mv_monthly",
+      "class": "data.panel.mv_monthly.MvMonthlyCalculator",
+      "description": "个股×月 市值（月末快照，月频固化）——fin_statement 与换手率因子前置",
+      "depends_on": ["stock_daily_basic"]
+    },
+    {
       "task_id": "fin_statement_panel",
       "class": "data.panel.financial_statements_snapshot.FinancialStatementsSnapshotCalculator",
-      "description": "个股×月 财务三表快照（snapshot_date=月末，PIT不穿越）",
+      "description": "个股×月 财务三表快照（snapshot_date=月末，PIT不穿越）——PE/PB 聚合与卫星仓",
       "depends_on": ["income", "balancesheet", "cashflow", "mv_monthly"]
     },
     {
@@ -88,22 +78,16 @@
       "depends_on": ["fin_statement_panel"]
     },
     {
-      "task_id": "factor_valuation",
-      "class": "data.factor.valuation.ValuationCalculator",
-      "description": "估值因子（snapshot_date=月末，PIT 12 期全量叉乘）",
-      "depends_on": ["fin_indicator_snapshot"]
-    },
-    {
       "task_id": "market_sentiment_monthly",
       "class": "data.panel.market_sentiment_monthly.MarketSentimentMonthlyCalculator",
-      "description": "市场×月 情绪（五维度36列：价11+量6+波6+估值7+资金7，指数+成分双视角）",
-      "depends_on": ["stock_daily_panel", "index_daily", "moneyflow_hsgt", "margin", "limit_list_d"]
+      "description": "市场×月 情绪（五维度36列：价11+量6+波6+估值7+资金7，指数+成分双视角）——regime 择时底座",
+      "depends_on": ["stock_daily_panel", "index_daily", "index_membership_monthly", "moneyflow_hsgt", "margin", "limit_list_d"]
     },
     {
-      "task_id": "stock_mv_monthly",
-      "class": "data.panel.mv_monthly.MvMonthlyCalculator",
-      "description": "个股×月 市值",
-      "depends_on": ["stock_daily_basic"]
+      "task_id": "sw_membership_monthly",
+      "class": "data.panel.sw_membership_monthly.SwMembershipMonthlyCalculator",
+      "description": "申万L1行业成分月末as-of快照（[in_date,out_date)区间PIT；index_signal Tier B宽度/估值的行业成分底座）",
+      "depends_on": ["index_member_all"]
     }
   ]
 }

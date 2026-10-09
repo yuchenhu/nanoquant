@@ -72,8 +72,7 @@ logger.info("=" * 60)
 logger.info("STEP 2: ALTER panel_stock_daily")
 
 add_column_if_not_exists("panel_stock_daily", "net_mf_vol", "DOUBLE", "net_mf_amount")
-add_column_if_not_exists("panel_stock_daily", "is_sz50", "BIGINT", "is_hs")
-add_column_if_not_exists("panel_stock_daily", "is_zzqz", "BIGINT", "is_hldb")
+# 注：is_sz50/is_zzqz 补列已移除（P1.5 删列，2026-10-09）
 
 drop_column_if_exists("panel_stock_daily", "is_zzhl")
 

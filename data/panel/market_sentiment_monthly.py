@@ -154,15 +154,6 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         }
         self._all_index_code = "000985.CSI"
         self._index_codes = list(self._code_to_dim.keys())
-        # 指数代码 → panel_stock_daily 的 is_xxx 列名
-        self._code_to_is_col: dict[str, str] = {
-            "000016.SH": "is_sz50",
-            "000300.SH": "is_hs300",
-            "000905.SH": "is_zz500",
-            "000852.SH": "is_zz1000",
-            "932000.CSI": "is_zz2000",
-            "000985.CSI": "is_zzqz",
-        }
         self.logger.info(
             "初始化: %d 指数 + all 全A, 五维度 36 列",
             len(self._index_codes),
@@ -271,7 +262,6 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
 
         upstream: dict[str, pd.DataFrame] = {}
         index_code_list = ",".join(f"'{c}'" for c in self._index_codes + [self._all_index_code])
-        is_cols = ",".join(self._code_to_is_col.values())
         # 日线前溯1年（MA60/250、波动率、回撤）
         read_start_idx = f"{int(sd[:4]) - 1}-01-01"
         # PE/PB历史分位前溯5年（月末抽样，非逐日）
@@ -293,13 +283,23 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
             f"SELECT ts_code, trade_date, `close`, amount, pe_ttm, pb, dv_ttm, turnover_rate, "
             f"  net_mf_amount, "
             f"  buy_elg_amount, sell_elg_amount, buy_lg_amount, sell_lg_amount, "
-            f"  buy_md_amount, sell_md_amount, buy_sm_amount, sell_sm_amount, "
-            f"  {is_cols} "
+            f"  buy_md_amount, sell_md_amount, buy_sm_amount, sell_sm_amount "
             f"FROM panel_stock_daily "
             f"WHERE trade_date >= '{read_start_idx}' AND trade_date <= '{ed}'",
             self.engine,
         )
         self.logger.info("  panel_stock_daily 日线: %d 行", len(upstream["psd"]))
+
+        # [2.5/7] 指数成分月末快照（P1.5 整改：替代 panel_stock_daily 的 is_xxx 布尔列，
+        # membership 面板是月末 as-of 的单一事实源；is_xxx 是日频物化，已删列）
+        self.logger.info("[2.5/7] 取 panel_index_membership_monthly...")
+        upstream["members"] = pd.read_sql(
+            f"SELECT index_code, trade_date, ts_code "
+            f"FROM panel_index_membership_monthly "
+            f"WHERE index_code IN ({index_code_list}) AND trade_date <= '{ed}'",
+            self.engine,
+        )
+        self.logger.info("  membership: %d 行", len(upstream["members"]))
 
         # [3/7] 月末交易日列表（计算期 + 前溯5年，用于PE/PB月末抽样）
         self.logger.info("[3/7] 计算月末交易日列表...")
@@ -373,6 +373,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
 
         idx_all      = upstream["idx"]
         psd          = upstream["psd"]
+        members      = upstream["members"]  # 指数成分月末快照（as-of 单一事实源）
         psd_monthly  = upstream["psd_monthly"]  # 月末抽样 PE/PB/dv，前溯5年
         hsgt         = upstream["hsgt"]
         margin_df    = upstream["margin"]
@@ -387,7 +388,7 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         t0 = time.time()
 
         # 统一 trade_date 为 datetime
-        for df in [idx_all, psd, psd_monthly, hsgt, margin_df, limit]:
+        for df in [idx_all, psd, psd_monthly, hsgt, margin_df, limit, members]:
             if "trade_date" in df.columns:
                 df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
 
@@ -426,6 +427,30 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
         # ---- 预计算3：个股月末 PE/PB/dv（用于5年分位） ----
         psd_monthly["_ym"] = psd_monthly["trade_date"].dt.strftime("%Y-%m")
 
+        # ---- 预计算4：指数成分 as-of 查找表（替代 is_xxx 列，P1.5 整改） ----
+        # 月 ym 的成分 = 该指数 <= ym 的最近一次月末快照（PIT，无未来函数）。
+        # membership 面板无月断档（审计过），bisect 兜底处理首月前/未覆盖期（返回空集）。
+        from bisect import bisect_right  # noqa: E402
+
+        members["_ym"] = members["trade_date"].dt.strftime("%Y-%m")
+        _member_ym: dict[str, list] = {}
+        _member_sets: dict[str, list] = {}
+        for code, g in members.groupby("index_code"):
+            yms = sorted(g["_ym"].unique())
+            _member_ym[code] = yms
+            _member_sets[code] = [
+                set(g.loc[g["_ym"] == ym, "ts_code"]) for ym in yms
+            ]
+        self.logger.info("成分 as-of lookup: %d 个指数", len(_member_ym))
+
+        def member_set(code: str, ym: str) -> set:
+            """指数 code 在 yyyy-mm 月的成分集合（as-of 最近月末快照）。"""
+            yms = _member_ym.get(code)
+            if not yms:
+                return set()
+            i = bisect_right(yms, ym) - 1
+            return _member_sets[code][i] if i >= 0 else set()
+
         rows = []
         total_months = len(month_ends)
         for i, me in enumerate(month_ends):
@@ -434,10 +459,9 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
             self.logger.info("[%d/%d] 计算 %s ...", i + 1, total_months, yyyymm)
             t_month = time.time()
 
-            # --- dimension='all'：成分 = is_zzqz == 1 ---
-            is_col_all = "is_zzqz"
+            # --- dimension='all'：全A = 当月有行情的全部个股（PIT 口径，不再依赖 is_zzqz） ---
             month_mask_all = psd["trade_date"].dt.strftime("%Y-%m") == yyyymm
-            all_codes = set(psd.loc[month_mask_all & (psd[is_col_all] == 1), "ts_code"].unique())
+            all_codes = set(psd.loc[month_mask_all, "ts_code"].unique())
             stk_all_dim = psd[psd["ts_code"].isin(all_codes)]
             stk_all_sorted = psd_sorted[psd_sorted["ts_code"].isin(all_codes)]
             all_row = self._compute_dimension(
@@ -452,17 +476,12 @@ class MarketSentimentMonthlyCalculator(PanelCalculator):
             )
             rows.append(all_row)
 
-            # --- dimension='index' × 5：用 is_xxx 列过滤成分 ---
+            # --- dimension='index' × 5：membership 面板 as-of 成分 ---
             for code, name in self._code_to_dim.items():
-                is_col = self._code_to_is_col.get(code)
-                if not is_col or is_col not in psd.columns:
-                    continue
                 idx_data = idx_all[idx_all["ts_code"] == code]
                 if idx_data.empty:
                     continue
-                # 只在月末截面上过滤成分（避免 MA 预计算数据被截断）
-                month_mask = psd["trade_date"].dt.strftime("%Y-%m") == yyyymm
-                member_codes = set(psd.loc[month_mask & (psd[is_col] == 1), "ts_code"].unique())
+                member_codes = member_set(code, yyyymm)
                 if not member_codes:
                     continue
                 stk_dim = psd[psd["ts_code"].isin(member_codes)]

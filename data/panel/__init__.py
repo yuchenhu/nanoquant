@@ -30,6 +30,7 @@ from data.panel.market_sentiment_monthly import (
 from data.panel.mv_monthly import MvMonthlyCalculator
 from data.panel.stock_daily_panel import StockDailyPanelCalculator
 from data.panel.stock_percentiles import StockPercentilesCalculator
+from data.panel.sw_membership_monthly import SwMembershipMonthlyCalculator
 
 __all__ = [
     "PanelCalculator",
@@ -56,5 +57,6 @@ PANEL_CALCULATORS = {
     "financial_statements_snapshot": FinancialStatementsSnapshotCalculator,
     "financial_indicators_snapshot": FinancialIndicatorsSnapshotCalculator,
     "index_membership_monthly": IndexMembershipMonthlyCalculator,
+    "sw_membership_monthly": SwMembershipMonthlyCalculator,
     "data_quality": DataQualityCalculator,
 }

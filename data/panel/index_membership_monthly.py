@@ -120,10 +120,20 @@ class IndexMembershipMonthlyCalculator(PanelCalculator):
 
         # 1. 双版归一
         df["index_code"] = df["index_code"].map(lambda c: CODE_TO_CANONICAL.get(c, c))
-        # 2. 月内去重：每个 (index_code, con_code, 年月) 取该月最新 trade_date
         df["ym"] = df["trade_date"].dt.strftime("%Y%m")
         df = df.sort_values("trade_date")
-        snap = df.groupby(["index_code", "con_code", "ym"], as_index=False).tail(1)
+        # 2. 月内去重：每个 (index_code, 年月) 取该月【最后一个 trade_date 的整张快照】。
+        #    [BUG FIX 2026-10-09] 旧实现按 (index, con_code, ym) tail(1) 逐股留最后一行——
+        #    月中被调样换出的股票，其月初行成为"月内最后一行"而残留（2016-12 沪深300
+        #    因此 330 只 vs 官方 300；实证见 research/audit_foundation_tables.py）。
+        #    实证数据结构：index_weight 是逐日全量快照（如 000016 2010-07 每日完整 50 行），
+        #    故"该月最后一天的整张集合"即正确的月末口径。
+        #    注意：drop_duplicates 的 subset 必须含 ym——曾漏掉导致跨月去重，
+        #    每股只留首月行、月末快照塌缩成"当月新入场股"（重建后全表仅 10 万行的事故）。
+        last_td = df.groupby(["index_code", "ym"])["trade_date"].transform("max")
+        snap = df[df["trade_date"] == last_td].copy()
+        snap = snap.drop_duplicates(subset=["index_code", "ym", "con_code"],
+                                    keep="first")
         if snap.empty:
             return pd.DataFrame()
 

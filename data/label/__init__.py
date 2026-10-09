@@ -9,14 +9,17 @@
 """
 from data.label.base import LabelCalculator
 from data.label.forward_returns import ForwardReturnsCalculator
+from data.label.index_forward_returns import IndexForwardReturnsCalculator
 
 # Label 计算器注册表（name → class）
 CALCULATORS = {
     "forward_returns": ForwardReturnsCalculator,
+    "index_forward_returns": IndexForwardReturnsCalculator,
 }
 
 __all__ = [
     "LabelCalculator",
     "ForwardReturnsCalculator",
+    "IndexForwardReturnsCalculator",
     "CALCULATORS",
 ]

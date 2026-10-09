@@ -135,15 +135,8 @@ def fill_stock_daily_panel():
             engine
         ).iloc[0, 0]
         logger.info(f"2024-01 验证通过: {cnt:,} 行 ({elapsed:.0f}s)")
-
-        # 检查 is_hs300 列是否全为 0
-        has_index = pd.read_sql(
-            "SELECT SUM(is_hs300) FROM panel_stock_daily WHERE trade_date BETWEEN '2024-01-01' AND '2024-01-31'",
-            engine
-        ).iloc[0, 0]
-        if has_index == 0:
-            logger.warning("警告: is_hs300 全为 0！index_membership_monthly 可能仍为空")
-            return False
+        # 注：is_hs300 检查已移除（P1.5 删列，2026-10-09；指数成分改 join
+        # panel_index_membership_monthly）
     except Exception as e:
         logger.error(f"2024-01 验证失败: {e}")
         return False
