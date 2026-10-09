@@ -104,7 +104,8 @@ nanoquant/
 ├── backtest/      # 策略层 - 回测引擎
 ├── signals/       # 策略层 - 调仓信号
 ├── scripts/       # 入口脚本（命令权威见 README.md）
-├── research/      # 研究 notebook + EDA + 图表输出
+├── research/      # 作者自己的研究：EDA / 审计 / 图表输出（进 git）
+├── archive/       # 第三方资料：研报 / 社区策略源码（本地保留，不进 git）
 └── tests/         # 历史验收测试（非回归套件）
 ```
 
