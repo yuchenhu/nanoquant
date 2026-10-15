@@ -31,7 +31,8 @@ class HighLowSpreadCalculator(FactorCalculator):
     table_name = "high_low_spread"  # 基类自动加 factor_ 前缀 → factor_high_low_spread
     primary_keys = ["ts_code", "trade_date"]
     biz_date_col = "trade_date"
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "trade_date"
 
     # 回看窗口（取 40 天保证有 20 天开盘）
     lookback_period: int = 40

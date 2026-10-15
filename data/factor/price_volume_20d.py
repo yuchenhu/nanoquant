@@ -37,7 +37,8 @@ class PriceVolume20DCalculator(FactorCalculator):
     table_name = "price_volume_20d"  # → factor_price_volume_20d
     primary_keys = ["ts_code", "trade_date"]
     biz_date_col = "trade_date"
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "trade_date"
 
     # 最大回看时间，取 20*2=40 天，留下个股停牌造成交易日期少于交易日历的 buffer
     window: int = 20

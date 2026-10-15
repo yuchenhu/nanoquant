@@ -30,7 +30,8 @@ class MvMonthlyCalculator(PanelCalculator):
     table_name = "mv_monthly"  # → panel_mv_monthly
     primary_keys = ["ts_code", "trade_date"]
     biz_date_col = "trade_date"
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "trade_date"
     output_schema = {
         "ts_code": "string", "trade_date": "string",
         "total_mv": "float", "circ_mv": "float",

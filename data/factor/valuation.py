@@ -39,7 +39,8 @@ class ValuationCalculator(FactorCalculator):
     table_name = "valuation"  # → factor_valuation
     primary_keys = ["snapshot_date", "ts_code"]
     biz_date_col = "snapshot_date"
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "snapshot_date"
 
     # 从 indicators 表读哪些列（用于后续取数）
     INDICATOR_COLS = [

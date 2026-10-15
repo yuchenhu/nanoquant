@@ -25,7 +25,8 @@ class FinancialIndicatorsSnapshotCalculator(PanelCalculator):
     table_name = "financial_indicators_snapshot"  # → panel_financial_indicators_snapshot
     primary_keys = ["snapshot_date", "ts_code", "end_date"]
     biz_date_col = "snapshot_date"  # 财务快照日期
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "snapshot_date"
     # output_schema 在 _init_column_lists 中显式构建，避免 NULL 首行推断错误
 
     def __init__(self, engine=None):
@@ -195,7 +196,8 @@ class FinancialIndicatorsSnapshotCalculator(PanelCalculator):
         for col in self.q_cols:
             result[f'{col}_ttm'] = grouped[f'{col}_q'].rolling(4, min_periods=4).sum().reset_index(level=0, drop=True)
         if 'total_div' in result.columns:
-            result['total_div_ttm'] = grouped['total_div'].fillna(0).rolling(4, min_periods=1).sum().reset_index(level=0, drop=True)
+            result['total_div'] = result['total_div'].fillna(0)
+            result['total_div_ttm'] = grouped['total_div'].rolling(4, min_periods=1).sum().reset_index(level=0, drop=True)
         for col in self.ttm_avg_cols:
             result[f'{col}_ttm_avg'] = grouped[col].rolling(4, min_periods=1).mean().reset_index(level=0, drop=True)
         return result
@@ -243,4 +245,5 @@ class FinancialIndicatorsSnapshotCalculator(PanelCalculator):
     def safe_divide(self, df: pd.DataFrame, num_col: str, den_col: str, min_threshold: float = 1e2) -> pd.Series:
         if num_col not in df.columns or den_col not in df.columns:
             return pd.Series(np.nan, index=df.index)
-        return (df[num_col] / df[den_col]).where(df[den_col].abs() > min_threshold, np.nan)
+        den = pd.to_numeric(df[den_col], errors='coerce')
+        return (pd.to_numeric(df[num_col], errors='coerce') / den).where(den.abs() > min_threshold, np.nan)

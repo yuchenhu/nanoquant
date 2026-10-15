@@ -26,7 +26,8 @@ class MarketSentimentDailyCalculator(PanelCalculator):
     table_name = "market_sentiment_daily"
     primary_keys = ["trade_date"]
     biz_date_col = "trade_date"
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "trade_date"
     output_schema = {
         "trade_date": "string",
     }

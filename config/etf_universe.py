@@ -216,7 +216,7 @@ def classify_etf(extracted_index: str):
     返回 ("", "宽基", cap, sty, "") 表示宽基/风格 ETF（无申万映射）。
     返回 ("", "港股" or "跨境", ...) 表示非A股标的。
     """
-    if not extracted_index:
+    if not isinstance(extracted_index, str) or not extracted_index:
         return ("", "other", "unknown", "unknown", "other")
 
     # 1. 行业关键词匹配

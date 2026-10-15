@@ -5,14 +5,15 @@
 - 表名加 label_ 前缀（与 panel / factor / 接入层表区分）
 - output_schema：加工层手写 schema dict（声明输出列类型，避免自动推断不准）
 - biz_date_col：标签数据按 trade_date 增量
-- write_mode：默认 upsert（按主键覆盖，幂等）
+- write_mode：默认 overwrite（按 partition_col 先删再批量写，幂等 + 去重护栏）
 
 子类声明：
     table_name: str          # 不含 label_ 前缀（基类自动加）
     primary_keys: list[str]  # 主键列
     biz_date_col: str        # 业务日期列（trade_date）
     output_schema: dict      # 输出列类型 {col: "float"/"int"/"string"/"date"/"bool"}
-    write_mode: str = "upsert"
+    write_mode: str = "overwrite"
+    partition_col: str       # overwrite 必填（trade_date）
 
 子类实现：
     get_data(start_date, end_date, **params) -> DataFrame
@@ -35,13 +36,13 @@ class LabelCalculator(BaseCalculator):
 
     - table_name 不含 label_ 前缀（本类自动加）
     - output_schema 由子类声明（加工层必须手写，不用自动推断）
-    - write_mode 默认 upsert（按主键覆盖，幂等）
+    - write_mode 默认 overwrite（按 partition_col 先删再批量写，幂等）
     """
 
     # 子类覆盖
     primary_keys: List[str] = []
     biz_date_col: str = "trade_date"
-    write_mode: str = "upsert"
+    write_mode: str = "overwrite"
     output_schema: Optional[Dict[str, str]] = None
 
     # 前缀（label 表统一加，与 panel / factor / 接入层表区分）

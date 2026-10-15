@@ -33,8 +33,10 @@ logs/
 htmlcov/
 
 # ===== 临时文件 / EDA =====
+# 注意：不能用 _*.py，会误伤 __init__.py 和 scripts/_lint_consistency.py
+# 临时脚本请用 tmp_ 前缀（如 tmp_eda.py），或自行 git add -f 强制添加
 _*.txt
-_*.py
+tmp_*.py
 
 # ===== 归档：研报 / 社区策略源码（第三方资料，不进 git；本地保留） =====
 archive/

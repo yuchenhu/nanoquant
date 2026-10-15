@@ -1,11 +1,9 @@
-"""signals/: 调仓信号生成层（与回测共用策略逻辑）。
+"""signals/: 调仓信号生成层（待重构）。
 
-模块：
-- generator.py: SignalGenerator（复用 portfolio.strategy 生成最新调仓信号）
+原 SignalGenerator（signals/generator.py）已废弃并删除：
+- signal_rebalance 表使用 write_mode=upsert，违反项目规则"已废弃 upsert"
+- 后续如需调仓信号，应在 portfolio/ 层用 Calculator 模式重新实现
+  （overwrite + partition_col=signal_date）
 
-CLAUDE.md: signals/ 与 backtest/ 共用同一套策略代码，避免回测/实盘两套。
-SignalGenerator 调用 strategy.compute_target_weights，输出 signal_rebalance 表。
+参见：ROADMAP.md / .trae/rules/nanoquant_loop.md §2 持久层
 """
-from signals.generator import SignalGenerator
-
-__all__ = ["SignalGenerator"]

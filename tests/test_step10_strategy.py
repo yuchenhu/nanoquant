@@ -2,7 +2,7 @@
 
 验证：
 1. portfolio/ 包结构完整（__init__.py, universe.py, strategy.py）
-2. backtest/ 包结构完整（__init__.py, metrics.py, engine.py）
+2. backtest/ 包结构完整（__init__.py, metrics.py, engine.py)
 3. signals/ 包结构完整（__init__.py, generator.py）
 4. portfolio.strategy.CrossSectionalMomentumStrategy 有 compute_target_weights / apply_constraints
 5. backtest.engine.VectorizedBacktester 有 run 方法
@@ -13,7 +13,14 @@
 10. DEFAULT_ETF_POOL 非空，含宽基/行业/风格三类
 11. 表名前缀：signal_rebalance（signals 层）
 12. 三层不依赖旧 data/config、data/utils
+
+已废弃（2026-07-22）：signal_rebalance 接口删除（write_mode=upsert 违反项目规则），
+signals/generator.py 已删除，本测试全部 skip。后续如需调仓信号应在 portfolio/ 层重写。
 """
+import pytest
+
+pytestmark = pytest.mark.skip(reason="signal_rebalance 接口已删除，signals/generator.py 已废弃")
+
 import sys
 import types
 from pathlib import Path

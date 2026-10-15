@@ -31,7 +31,8 @@ class TraderStructureCalculator(FactorCalculator):
     table_name = "trader_structure"  # → factor_trader_structure
     primary_keys = ["ts_code", "trade_date"]
     biz_date_col = "trade_date"
-    write_mode = "upsert"
+    write_mode = "overwrite"
+    partition_col = "trade_date"
 
     # 回看窗口
     lookback_period: int = 40
