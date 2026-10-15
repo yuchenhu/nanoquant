@@ -1,4 +1,4 @@
-"""未来 N 日收益率标签（个股 + ETF + 指数 统一）。
+"""未来 N 日收益率标签（个股 + ETF 统一）。
 
 表名：label_forward_returns（基类自动加 label_ 前缀）
 主键：ts_code + trade_date
@@ -7,8 +7,11 @@ write_mode：overwrite
 partition_col：trade_date
 
 数据源：panel_stock_daily（个股） + panel_fund_daily（ETF，含 fund_adj 复权因子）
-       + index_daily（宽基+申万行业指数，无复权无停牌）
-asset_type 列区分：stock / etf / index
+asset_type 列区分：stock / etf
+
+[2026-10-09 决策] 指数 label 不进本表——指数单独走 label_index_forward_returns
+专表（表小、join 快、口径独立维护；宽基/风格/申万 L1 全覆盖）。原 7 月版把
+index_daily 整表混入本表的 UNION 已移除，消除指数 label 双源。
 
 ----
 设计决策（2026-07-22 重构）：
@@ -18,7 +21,7 @@ asset_type 列区分：stock / etf / index
    T+1 买入（避免未来函数），持有 N 个交易日后 T+1+N 卖出。
 3. N in {1, 2, 3, 5, 10, 20, 40, 60}。
 4. 更新策略：每天回跑 T-61 ~ T，partition_col = trade_date，overwrite 覆盖。
-5. 三类资产同一张表 + asset_type 列区分。
+5. 个股与 ETF 同一张表 + asset_type 列区分。
 """
 
 from __future__ import annotations
@@ -117,7 +120,7 @@ class ForwardReturnsCalculator(LabelCalculator):
         end_date: Optional[str] = None,
         **params: Any,
     ) -> pd.DataFrame:
-        """取 panel_stock_daily + panel_fund_daily + index_daily 数据。
+        """取 panel_stock_daily（个股）+ panel_fund_daily（ETF）数据。
 
         end_date 向前扩展 READ_BUFFER_TRADING_DAYS 个交易日以覆盖最远 horizon 的未来价格。
         start_date/end_date 可能是 YYYY-MM-DD 或 YYYYMMDD 格式。
@@ -140,6 +143,7 @@ class ForwardReturnsCalculator(LabelCalculator):
         if read_end:
             date_clause += f" AND trade_date <= '{read_end}'"
 
+        # 指数不在此表：走 label_index_forward_returns 专表（2026-10-09 决策）
         query = f"""
         SELECT ts_code, trade_date, close, adj_factor, is_suspend, 'stock' AS asset_type
         FROM panel_stock_daily
@@ -148,14 +152,10 @@ class ForwardReturnsCalculator(LabelCalculator):
         SELECT ts_code, trade_date, close, adj_factor, is_suspend, 'etf' AS asset_type
         FROM panel_fund_daily
         WHERE 1=1 {date_clause}
-        UNION ALL
-        SELECT ts_code, trade_date, close, 1.0 AS adj_factor, 0 AS is_suspend, 'index' AS asset_type
-        FROM index_daily
-        WHERE 1=1 {date_clause}
         """
 
         self.logger.info(
-            f"取 panel_stock_daily + panel_fund_daily + index_daily: "
+            f"取 panel_stock_daily + panel_fund_daily: "
             f"{start_date or '开始'}~{read_end or '结束'}"
         )
         return pd.read_sql(query, self.engine)

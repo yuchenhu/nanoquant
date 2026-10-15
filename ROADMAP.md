@@ -36,7 +36,7 @@
 - **2026-10-09 merge 7月工作线资产落地（均未对 10 月基建验收，用前先核）**：
   - `backtest/engine.py` 真实成本版（佣金/冲击/防未来函数/停牌过滤）——P0.1 骨架已在，缺口变为"验收 + 接入 10 月基建"；
   - `data/factor/{momentum_r2, momentum_term, overnight_intraday}.py` 3 个指数因子 calculator——**未注册调度**，与 `factor_index_daily` 计划重叠，建表时吸收/取代；
-  - `data/label/forward_returns.py` 全资产重写版（ETF+指数+停牌处理+asset_type）——与 `label_index_forward_returns` 形成**指数 label 双源**，待去重决策（倾向：个股/ETF 归 forward_returns，指数归专表）；
+  - `data/label/forward_returns.py` 全资产重写版（ETF+停牌处理+asset_type，交易日历回推）——**指数 label 双源已解决（2026-10-09 作者决策）**：index_daily 部分已从本表移除，指数归 `label_index_forward_returns` 专表（表小 join 快），本表收窄为个股+ETF；
   - `docs/spec_{backtest_engine,index_factors}.md` 两份 spec、`wiki/wiki/` 研究笔记、`scripts/_lint_consistency.py`。
 - **注意**：当前向量化路径的回测收益仍虚高（见缺口 1），7月线引擎未验收前结论只作粗筛。
 

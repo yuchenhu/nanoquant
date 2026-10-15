@@ -42,8 +42,8 @@
     {
       "task_id": "label_forward_returns",
       "class": "data.label.forward_returns.ForwardReturnsCalculator",
-      "description": "未来 N 日收益率标签——因子检验体系（P0.2）的评估底座",
-      "depends_on": ["stock_daily_panel"]
+      "description": "未来 N 日收益率标签（个股+ETF；指数走专表 label_index_forward_returns）",
+      "depends_on": ["stock_daily_panel", "fund_daily_panel"]
     },
     {
       "task_id": "label_index_forward_returns",
