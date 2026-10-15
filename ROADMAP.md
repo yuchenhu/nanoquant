@@ -30,10 +30,15 @@
 
 ### 策略层（MVP，结论仅作粗筛）
 
-- ETF 截面动量轮动 MVP：portfolio / backtest / signals 三层共用代码；`signal_rebalance` 落库。
+- ETF 截面动量轮动 MVP：portfolio / backtest / signals 三层共用代码。
 - 分析单元已从 ETF 迁移到**指数**（池 + membership + 自算估值）；ETF 退居执行层。
-- 指标生成器 SPEC v2 定稿（design notes §4.1）：23 族因子字典 / 窗口网格 / 两层决策原则 / PE/PB 聚合口径。
-- **注意**：当前是向量化回测，收益虚高（见缺口 1），结果不可作为决策依据。
+- 指标生成器 SPEC v3 定稿（design notes §4.1+§4.2）：因子字典 / 宽表结构 / 两层决策原则 / PE/PB 聚合口径。
+- **2026-10-09 merge 7月工作线资产落地（均未对 10 月基建验收，用前先核）**：
+  - `backtest/engine.py` 真实成本版（佣金/冲击/防未来函数/停牌过滤）——P0.1 骨架已在，缺口变为"验收 + 接入 10 月基建"；
+  - `data/factor/{momentum_r2, momentum_term, overnight_intraday}.py` 3 个指数因子 calculator——**未注册调度**，与 `factor_index_daily` 计划重叠，建表时吸收/取代；
+  - `data/label/forward_returns.py` 全资产重写版（ETF+指数+停牌处理+asset_type）——与 `label_index_forward_returns` 形成**指数 label 双源**，待去重决策（倾向：个股/ETF 归 forward_returns，指数归专表）；
+  - `docs/spec_{backtest_engine,index_factors}.md` 两份 spec、`wiki/wiki/` 研究笔记、`scripts/_lint_consistency.py`。
+- **注意**：当前向量化路径的回测收益仍虚高（见缺口 1），7月线引擎未验收前结论只作粗筛。
 
 ---
 
@@ -41,7 +46,7 @@
 
 ### P0 · 不补会出假结论
 
-1. **真实回测引擎**：交易成本（佣金 + 冲击成本，轮动换手是最大收益杀手）；涨跌停/停牌不可成交（suspend / stk_limit 数据已有，须真用上）；成交价禁用信号当日收盘（未来函数）→ 次日开盘/VWAP；资金约束（整数手、现金缓冲）。
+1. **真实回测引擎**：~~从零建~~ **2026-10-09 更新：7月线已带回真实成本引擎骨架（backtest/engine.py），本项变为"验收该引擎 + 对接 10 月基建（label_index_forward_returns / factor_index_daily）+ 补资金约束"**。交易成本（佣金 + 冲击成本）、涨跌停/停牌不可成交、次日开盘/VWAP 成交、整数手与现金缓冲，逐项核实现有实现。
 2. **index_signal 指标生成器 + 因子有效性检验体系**：SPEC v3 定稿（design notes §4.1+§4.2）——表改为 `factor_index_daily`（标的×日宽表，列名内嵌窗口，Tier A+B 一次建成）。原料全部就绪并已验收：label（§8.7）、宽基/风格 membership、SW membership（PIT as-of）。检验 = IC/ICIR、分层单调性、IC 衰减、因子相关矩阵（去冗余）、过滤器触发日重叠矩阵（Jaccard>0.7 不启用）；条件 IC 按 §8.5。
 
 ### P1 · 影响可信度与推进
